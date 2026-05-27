@@ -1,40 +1,58 @@
-Below are the steps to get your plugin running. You can also find instructions at:
+# Color migration helper
 
-  https://www.figma.com/plugin-docs/plugin-quickstart-guide/
+Figma plugin for migrating Core UI Kit files from color variants to variable modes.
 
-This plugin template uses Typescript and NPM, two standard tools in creating JavaScript applications.
+## What It Does
 
-First, download Node.js which comes with NPM. This will allow you to install TypeScript and other
-libraries. You can find the download link here:
+The plugin has three main steps:
 
-  https://nodejs.org/en/download/
+1. Prime variables
+   - Renames the local variable collection `Main color` to `Color`.
+   - Renames variables in that collection from `color/main/*` to `*`.
+   - Does nothing if the file is already primed.
 
-Next, install TypeScript using the command:
+2. Variant cleanup
+   - Scans all component sets in the file.
+   - Removes unsupported color variants: `neutral`, `support`, `danger`, `info`, `warning`, and `success`.
+   - Treats both `color` and `color mode` as the color variant property.
+   - Renames the remaining variants so the color property is removed from the variant name.
+   - Handles `Alert` and `ValidationMessage` as special cases: their color variants are kept, but bound paints are moved from Semantic color variables to Color variables and the correct color mode is set.
 
-  npm install -g typescript
+3. Missing instance fix
+   - Scans selection, current page, or the whole file for instances whose old variant was removed.
+   - Finds the matching current component variant by using the old component name and the remaining non-color variant properties.
+   - Swaps ready instances to the matching current component.
+   - Sets the correct color mode on the fixed instance.
+   - Lets the user choose which Color mode should replace the old `support` category.
 
-Finally, in the directory of your plugin, get the latest type definitions for the plugin API by running:
+## Temporary Reporting
 
-  npm install --save-dev @figma/plugin-typings
+The UI currently includes a Markdown report after scan operations. This is meant as a temporary audit helper and can be removed later.
 
-If you are familiar with JavaScript, TypeScript will look very familiar. In fact, valid JavaScript code
-is already valid Typescript code.
+Reports include:
 
-TypeScript adds type annotations to variables. This allows code editors such as Visual Studio Code
-to provide information about the Figma API while you are writing code, as well as help catch bugs
-you previously didn't notice.
+- Variants that will be deleted, grouped by page and component set.
+- Missing instances inside components/component sets.
+- Missing instances outside components, grouped by page and counted by old variant.
 
-For more information, visit https://www.typescriptlang.org/
+## Development
 
-Using TypeScript requires a compiler to convert TypeScript (code.ts) into JavaScript (code.js)
-for the browser to run.
+Install dependencies:
 
-We recommend writing TypeScript code using Visual Studio code:
+```bash
+npm install
+```
 
-1. Download Visual Studio Code if you haven't already: https://code.visualstudio.com/.
-2. Open this directory in Visual Studio Code.
-3. Compile TypeScript to JavaScript: Run the "Terminal > Run Build Task..." menu item,
-    then select "npm: watch". You will have to do this again every time
-    you reopen Visual Studio Code.
+Build `code.ts` into `code.js`:
 
-That's it! Visual Studio Code will regenerate the JavaScript file every time you save.
+```bash
+npm run build
+```
+
+Run lint:
+
+```bash
+npm run lint
+```
+
+`code.js` is generated from `code.ts` and is the file loaded by Figma.

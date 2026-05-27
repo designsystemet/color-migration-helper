@@ -171,6 +171,24 @@
     line-height: 1.35;
   }
 
+  .markdown-report {
+    display: grid;
+    gap: 8px;
+    margin-top: 10px;
+  }
+
+  .markdown-report textarea {
+    min-height: 220px;
+    border: 1px solid var(--figma-color-border, #d9d9d9);
+    border-radius: 4px;
+    background: var(--figma-color-bg, #ffffff);
+    color: var(--figma-color-text, #1e1e1e);
+    font: 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    line-height: 1.45;
+    padding: 8px;
+    resize: vertical;
+  }
+
   .busy-overlay {
     position: fixed;
     inset: 0;
@@ -237,7 +255,7 @@
     <section class="step" id="step-variants">
       <section class="panel">
         <div class="panel-title">Variant cleanup</div>
-        <p>Remove unsupported color variants, remove the color property from variants, and migrate Alert colors.</p>
+        <p>Remove unsupported color variants, remove the color property from variants, and migrate semantic color-mode components.</p>
         <div class="toolbar" style="margin-top: 10px;">
           <button class="primary" id="scanVariants">Scan variants</button>
           <button class="danger" id="applyVariants" disabled>Apply variant cleanup</button>
@@ -355,6 +373,7 @@
 
   function renderDetails(payload) {
     operationDetails.innerHTML = '';
+    renderMarkdownReport(payload);
 
     if (payload.operation !== 'scan-missing-instances') {
       return;
@@ -403,6 +422,183 @@
     }
   }
 
+  function renderMarkdownReport(payload) {
+    // Temporary review/reporting aid. It summarizes scan scope in a copyable
+    // Markdown format and can be removed without affecting migration logic.
+    const markdown = buildMarkdownReport(payload);
+    if (!markdown) {
+      return;
+    }
+
+    const wrapper = document.createElement('div');
+    wrapper.className = 'markdown-report';
+
+    const heading = document.createElement('div');
+    heading.className = 'detail-title';
+    heading.textContent = 'Markdown report';
+
+    const textarea = document.createElement('textarea');
+    textarea.value = markdown;
+    textarea.readOnly = true;
+
+    const copyButton = document.createElement('button');
+    copyButton.textContent = 'Copy Markdown';
+    copyButton.onclick = () => {
+      textarea.select();
+      document.execCommand('copy');
+      copyButton.textContent = 'Copied';
+      window.setTimeout(() => {
+        copyButton.textContent = 'Copy Markdown';
+      }, 1200);
+    };
+
+    wrapper.append(heading, textarea, copyButton);
+    operationDetails.appendChild(wrapper);
+  }
+
+  function buildMarkdownReport(payload) {
+    if (payload.operation === 'scan-unsupported-variants') {
+      return buildVariantMarkdownReport(payload);
+    }
+
+    if (payload.operation === 'scan-missing-instances') {
+      return buildMissingInstancesMarkdownReport(payload);
+    }
+
+    return '';
+  }
+
+  function buildVariantMarkdownReport(payload) {
+    const details = payload.details || {};
+    const plans = Array.isArray(details.plans) ? details.plans : [];
+    const removals = [];
+
+    for (const plan of plans) {
+      const variants = Array.isArray(plan.variantsToRemove) ? plan.variantsToRemove : [];
+      for (const variant of variants) {
+        removals.push({
+          pageName: plan.pageName || 'Unknown page',
+          componentSetName: plan.componentSetName || 'Unknown component set',
+          variantName: variant.name || 'Unnamed variant',
+          color: variant.color || 'unknown',
+        });
+      }
+    }
+
+    removals.sort((a, b) =>
+      a.pageName.localeCompare(b.pageName) ||
+      a.componentSetName.localeCompare(b.componentSetName) ||
+      a.variantName.localeCompare(b.variantName)
+    );
+
+    const lines = [
+      '# Variant cleanup scope',
+      '',
+      `Variants to delete: ${removals.length}`,
+      '',
+    ];
+
+    let currentPage = null;
+    let currentSet = null;
+    for (const removal of removals) {
+      if (removal.pageName !== currentPage) {
+        currentPage = removal.pageName;
+        currentSet = null;
+        lines.push(`## ${currentPage}`);
+        lines.push('');
+      }
+
+      if (removal.componentSetName !== currentSet) {
+        currentSet = removal.componentSetName;
+        lines.push(`### ${currentSet}`);
+      }
+
+      lines.push(`- ${removal.variantName} (${removal.color})`);
+    }
+
+    return lines.join('\n').trim();
+  }
+
+  function buildMissingInstancesMarkdownReport(payload) {
+    const details = payload.details || {};
+    const plans = Array.isArray(details.plans) ? details.plans : [];
+    const componentPlans = plans.filter((plan) => plan.componentContextType === 'COMPONENT' || plan.componentContextType === 'COMPONENT_SET');
+    const instancePlans = plans.filter((plan) => !plan.componentContextType);
+
+    const lines = [
+      '# Missing variants scope',
+      '',
+      `Missing instances: ${plans.length}`,
+      `Ready: ${details.readyCount || 0}`,
+      `Blocked: ${details.blockedCount || 0}`,
+      '',
+      '## Inside components or component sets',
+      '',
+    ];
+
+    if (componentPlans.length === 0) {
+      lines.push('_None found._');
+    } else {
+      const sortedComponentPlans = componentPlans.slice().sort((a, b) =>
+        getComponentContextLabel(a).localeCompare(getComponentContextLabel(b)) ||
+        String(a.instanceName || '').localeCompare(String(b.instanceName || ''))
+      );
+
+      for (const plan of sortedComponentPlans) {
+        lines.push(`- ${getComponentContextLabel(plan)}: ${plan.instanceName || 'Unnamed instance'} (${plan.sourceComponentName || 'Unknown source'})`);
+      }
+    }
+
+    lines.push('');
+    lines.push('## Instances outside components');
+    lines.push('');
+
+    const countsByPage = {};
+    for (const plan of instancePlans) {
+      const pageName = plan.pageName || 'Unknown page';
+      const variantLabel = getVariantCountLabel(plan);
+      if (!countsByPage[pageName]) {
+        countsByPage[pageName] = {};
+      }
+      countsByPage[pageName][variantLabel] = (countsByPage[pageName][variantLabel] || 0) + 1;
+    }
+
+    const pageNames = Object.keys(countsByPage).sort((a, b) => a.localeCompare(b));
+    if (pageNames.length === 0) {
+      lines.push('_None found._');
+    }
+
+    for (const pageName of pageNames) {
+      lines.push(`### ${pageName}`);
+      const variants = Object.keys(countsByPage[pageName]).sort((a, b) => a.localeCompare(b));
+      for (const variantName of variants) {
+        lines.push(`- ${variantName}: ${countsByPage[pageName][variantName]}`);
+      }
+      lines.push('');
+    }
+
+    return lines.join('\n').trim();
+  }
+
+  function getComponentContextLabel(plan) {
+    return plan.componentContextSetName || plan.componentContextName || plan.parentName || 'Unknown component set';
+  }
+
+  function getVariantCountLabel(plan) {
+    if (plan.componentSetName && plan.removedColor) {
+      const tokens = Array.isArray(plan.nonColorTokens) && plan.nonColorTokens.length > 0
+        ? ` ${plan.nonColorTokens.join('/')}`
+        : '';
+      return `${plan.componentSetName} ${plan.removedColor}${tokens}`;
+    }
+
+    if (plan.sourceComponentName) {
+      return plan.sourceComponentName;
+    }
+
+    return plan.instanceName || 'Unknown variant';
+  }
+
   function formatTargetPropertyValues(targetPropertyValues) {
     if (!targetPropertyValues) {
       return 'none';
@@ -433,12 +629,12 @@
     }
 
     if (payload.operation === 'scan-unsupported-variants') {
-      return `Scanned ${details.scannedComponentSetCount || 0} component sets. Found ${details.removeCount || 0} variants to remove, ${details.renameCount || 0} variants to rename, and ${details.alertMigrationCount || 0} Alert sets to migrate.`;
+      return `Scanned ${details.scannedComponentSetCount || 0} component sets. Found ${details.removeCount || 0} variants to remove, ${details.renameCount || 0} variants to rename, and ${details.colorModeMigrationCount || details.alertMigrationCount || 0} color-mode sets to migrate.`;
     }
 
     if (payload.operation === 'apply-unsupported-variants') {
-      const alert = details.alertMigration || {};
-      return `Removed ${details.removedCount || 0} variants, renamed ${details.renamedCount || 0}, migrated ${alert.migratedPaintCount || 0} Alert paints, failed ${details.failedCount || 0}.`;
+      const colorModeMigration = details.colorModeMigration || details.alertMigration || {};
+      return `Removed ${details.removedCount || 0} variants, renamed ${details.renamedCount || 0}, migrated ${colorModeMigration.migratedPaintCount || 0} color-mode paints, failed ${details.failedCount || 0}.`;
     }
 
     if (payload.operation === 'load-color-modes') {
@@ -471,7 +667,7 @@
   };
 
   applyVariantsButton.onclick = () => {
-    const confirmed = window.confirm('This will remove unsupported color variants, migrate Alert colors, and rename remaining variants to remove the color property. Continue?');
+    const confirmed = window.confirm('This will remove unsupported color variants, migrate semantic color-mode components, and rename remaining variants to remove the color property. Continue?');
     if (!confirmed) {
       return;
     }

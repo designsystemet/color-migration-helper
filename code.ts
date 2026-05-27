@@ -54,6 +54,7 @@ type UnsupportedColor =
 type ComponentSetRemovalPlan = {
   componentSetId: string;
   componentSetName: string;
+  pageName: string | null;
   variantsToRemove: Array<{
     id: string;
     name: string;
@@ -89,6 +90,9 @@ type MissingInstancePlan = {
   reason?: string;
   targetCandidateCount?: number;
   targetCandidateNames?: string[];
+  componentContextType?: 'COMPONENT' | 'COMPONENT_SET';
+  componentContextName?: string;
+  componentContextSetName?: string;
 };
 
 const UNSUPPORTED_COLORS: UnsupportedColor[] = [
@@ -100,14 +104,18 @@ const UNSUPPORTED_COLORS: UnsupportedColor[] = [
   'success',
 ];
 
-const SKIPPED_COMPONENT_SET_NAMES = ['Alert'];
 const COLOR_COLLECTION_NAMES = ['Color', 'Main color'];
 const DEFAULT_COLOR_MODE_NAME = 'accent';
-const ALERT_COMPONENT_SET_NAME = 'Alert';
-const ALERT_COLOR_MODES = ['info', 'warning', 'danger', 'success'];
+// Older components used both "color" and "color mode" as the variant property
+// that selected neutral/support/etc. Treat both as the same migration axis.
+const COLOR_VARIANT_PROPERTY_NAMES = ['color', 'color mode'];
+// These keep their color variants, but their paints should move from Semantic
+// variables to Color variables and use modes for info/warning/danger/success.
+const COLOR_MODE_MIGRATION_COMPONENT_SET_NAMES = ['Alert', 'ValidationMessage'];
+const SEMANTIC_COLOR_GROUPS = ['info', 'warning', 'danger', 'success'];
 
 let pendingUnsupportedVariantPlans: ComponentSetRemovalPlan[] = [];
-let pendingAlertMigrationComponentSetIds: string[] = [];
+let pendingColorModeMigrationComponentSetIds: string[] = [];
 let pendingMissingInstancePlans: MissingInstancePlan[] = [];
 
 figma.showUI(__html__, { width: 480, height: 460, themeColors: true });
@@ -152,24 +160,27 @@ function asErrorResult(operation: Operation, error: unknown): OperationResultPay
   };
 }
 
-function getVariantPropertyValue(node: ComponentNode, propertyName: string): string | null {
+function isColorVariantPropertyName(propertyName: string) {
+  return COLOR_VARIANT_PROPERTY_NAMES.includes(normalizeToken(propertyName));
+}
+
+function getColorVariantPropertyValue(node: ComponentNode): string | null {
   const properties = node.variantProperties;
   if (!properties) {
     return null;
   }
 
-  const [matchingKey] = Object.keys(properties).filter((key) => key.toLowerCase() === propertyName.toLowerCase());
+  const matchingKey = Object.keys(properties).find(isColorVariantPropertyName);
   return matchingKey ? properties[matchingKey] : null;
 }
 
-function getVariantPropertyKey(node: ComponentNode, propertyName: string): string | null {
+function getColorVariantPropertyKey(node: ComponentNode): string | null {
   const properties = node.variantProperties;
   if (!properties) {
     return null;
   }
 
-  const [matchingKey] = Object.keys(properties).filter((key) => key.toLowerCase() === propertyName.toLowerCase());
-  return matchingKey || null;
+  return Object.keys(properties).find(isColorVariantPropertyName) || null;
 }
 
 function isUnsupportedColor(value: string | null): value is UnsupportedColor {
@@ -185,6 +196,8 @@ function isChildrenMixin(node: BaseNode): node is BaseNode & ChildrenMixin {
 }
 
 function shouldTraverseChildren(node: PageNode | SceneNode) {
+  // Most scans stop at instances for performance. The special paint migration
+  // has its own traversal because it intentionally edits nested instance layers.
   return node.type !== 'INSTANCE' && isChildrenMixin(node);
 }
 
@@ -205,10 +218,12 @@ function parseRemovedComponentName(componentName: string): {
 }
 
 function getVariantPropertyOrder(componentSet: ComponentSetNode) {
+  // Missing variants only give us the old component name, so we map the old
+  // slash-separated tokens back onto the current non-color variant properties.
   const definitions = Object.entries(componentSet.componentPropertyDefinitions)
     .filter(([, definition]) => definition.type === 'VARIANT')
     .map(([key]) => key)
-    .filter((key) => normalizeToken(key) !== 'color');
+    .filter((key) => !isColorVariantPropertyName(key));
 
   if (definitions.length > 0) {
     return definitions;
@@ -216,7 +231,7 @@ function getVariantPropertyOrder(componentSet: ComponentSetNode) {
 
   const firstComponent = componentSet.children.find((child): child is ComponentNode => child.type === 'COMPONENT');
   return firstComponent?.variantProperties
-    ? Object.keys(firstComponent.variantProperties).filter((key) => normalizeToken(key) !== 'color')
+    ? Object.keys(firstComponent.variantProperties).filter((key) => !isColorVariantPropertyName(key))
     : [];
 }
 
@@ -295,12 +310,12 @@ function collectSceneNodes(root: PageNode | SceneNode): SceneNode[] {
   return nodes;
 }
 
-function collectEditableDescendants(root: SceneNode): SceneNode[] {
+function collectDescendantsIncludingInstances(root: SceneNode): SceneNode[] {
   const nodes: SceneNode[] = [];
   const visit = (node: SceneNode) => {
     nodes.push(node);
 
-    if (shouldTraverseChildren(node)) {
+    if (isChildrenMixin(node)) {
       for (const child of node.children) {
         visit(child);
       }
@@ -325,9 +340,40 @@ function getPageName(node: BaseNode): string | null {
   return null;
 }
 
+function getComponentContext(node: BaseNode): {
+  type: 'COMPONENT' | 'COMPONENT_SET';
+  name: string;
+  componentSetName: string | null;
+} | null {
+  let current = node.parent;
+
+  while (current) {
+    if (current.type === 'COMPONENT') {
+      const parentSet = current.parent?.type === 'COMPONENT_SET' ? current.parent.name : null;
+      return {
+        type: 'COMPONENT',
+        name: current.name,
+        componentSetName: parentSet,
+      };
+    }
+
+    if (current.type === 'COMPONENT_SET') {
+      return {
+        type: 'COMPONENT_SET',
+        name: current.name,
+        componentSetName: current.name,
+      };
+    }
+
+    current = current.parent;
+  }
+
+  return null;
+}
+
 function buildVariantNameWithoutColor(node: ComponentNode): string | null {
   const properties = node.variantProperties;
-  const colorKey = getVariantPropertyKey(node, 'color');
+  const colorKey = getColorVariantPropertyKey(node);
 
   if (!properties || !colorKey) {
     return null;
@@ -572,6 +618,8 @@ async function findComponentSetsByNames(wantedNames: Set<string>, scope: FixScop
     };
   }
 
+  // Loading every page is expensive in large files, so only do it when the
+  // target set is not on the current page or the user explicitly scans the file.
   await figma.loadAllPagesAsync();
   const allSets: ComponentSetNode[] = [];
   const allFoundIds = new Set<string>();
@@ -673,42 +721,42 @@ async function scanUnsupportedVariants(): Promise<OperationResultPayload> {
 
   const plans: ComponentSetRemovalPlan[] = [];
   const skippedComponentSets: JsonValue[] = [];
-  const alertMigrationComponentSetIds: string[] = [];
+  const colorModeMigrationComponentSetIds: string[] = [];
 
   for (let index = 0; index < componentSets.length; index += 1) {
     const componentSet = componentSets[index];
-    const isSkippedComponentSet = SKIPPED_COMPONENT_SET_NAMES.some((name) => normalizeToken(name) === normalizeToken(componentSet.name));
-    const isAlertComponentSet = normalizeToken(componentSet.name) === normalizeToken(ALERT_COMPONENT_SET_NAME);
+    const isColorModeMigrationComponentSet = COLOR_MODE_MIGRATION_COMPONENT_SET_NAMES.some(
+      (name) => normalizeToken(name) === normalizeToken(componentSet.name),
+    );
 
-    if (isSkippedComponentSet) {
-      if (isAlertComponentSet) {
-        alertMigrationComponentSetIds.push(componentSet.id);
-      }
+    if (isColorModeMigrationComponentSet) {
+      // Alert and ValidationMessage are migrated by rebinding paints instead of
+      // deleting their color variants.
+      colorModeMigrationComponentSetIds.push(componentSet.id);
 
       skippedComponentSets.push({
         id: componentSet.id,
         name: componentSet.name,
-        reason: isAlertComponentSet
-          ? 'Handled by Alert color migration.'
-          : 'Skipped by migration rule.',
+        reason: 'Handled by color mode migration.',
       });
       continue;
     }
 
     const children = componentSet.children.filter((child): child is ComponentNode => child.type === 'COMPONENT');
-    const hasColorProperty = children.some((child) => getVariantPropertyKey(child, 'color') !== null);
+    const hasColorProperty = children.some((child) => getColorVariantPropertyKey(child) !== null);
 
     if (hasColorProperty) {
       const plan: ComponentSetRemovalPlan = {
         componentSetId: componentSet.id,
         componentSetName: componentSet.name,
+        pageName: getPageName(componentSet),
         variantsToRemove: [],
         variantsToRename: [],
         skippedRenames: [],
       };
 
       for (const child of children) {
-        const color = getVariantPropertyValue(child, 'color');
+        const color = getColorVariantPropertyValue(child);
         const normalizedColor = color ? color.toLowerCase() : null;
 
         if (isUnsupportedColor(normalizedColor)) {
@@ -757,14 +805,14 @@ async function scanUnsupportedVariants(): Promise<OperationResultPayload> {
   }
 
   pendingUnsupportedVariantPlans = plans;
-  pendingAlertMigrationComponentSetIds = alertMigrationComponentSetIds;
+  pendingColorModeMigrationComponentSetIds = colorModeMigrationComponentSetIds;
 
   const removeCount = plans.reduce((sum, plan) => sum + plan.variantsToRemove.length, 0);
   const renameCount = plans.reduce((sum, plan) => sum + plan.variantsToRename.length, 0);
   const skippedRenameCount = plans.reduce((sum, plan) => sum + plan.skippedRenames.length, 0);
-  const alertMigrationCount = alertMigrationComponentSetIds.length;
+  const colorModeMigrationCount = colorModeMigrationComponentSetIds.length;
 
-  if (removeCount === 0 && renameCount === 0 && alertMigrationCount === 0) {
+  if (removeCount === 0 && renameCount === 0 && colorModeMigrationCount === 0) {
     return {
       createdAt: new Date().toISOString(),
       operation,
@@ -773,7 +821,8 @@ async function scanUnsupportedVariants(): Promise<OperationResultPayload> {
       details: {
         scannedComponentSetCount: componentSets.length,
         skippedComponentSets,
-        alertMigrationCount,
+        alertMigrationCount: colorModeMigrationCount,
+        colorModeMigrationCount,
         unsupportedColors: UNSUPPORTED_COLORS,
         plans,
       },
@@ -784,12 +833,13 @@ async function scanUnsupportedVariants(): Promise<OperationResultPayload> {
     createdAt: new Date().toISOString(),
     operation,
     status: 'preview',
-    message: `Found ${removeCount} variant${removeCount === 1 ? '' : 's'} to remove, ${renameCount} variant${renameCount === 1 ? '' : 's'} to rename, and ${alertMigrationCount} Alert set${alertMigrationCount === 1 ? '' : 's'} to migrate.`,
+    message: `Found ${removeCount} variant${removeCount === 1 ? '' : 's'} to remove, ${renameCount} variant${renameCount === 1 ? '' : 's'} to rename, and ${colorModeMigrationCount} color-mode set${colorModeMigrationCount === 1 ? '' : 's'} to migrate.`,
     details: {
       scannedComponentSetCount: componentSets.length,
       affectedComponentSetCount: plans.length,
       skippedComponentSets,
-      alertMigrationCount,
+      alertMigrationCount: colorModeMigrationCount,
+      colorModeMigrationCount,
       removeCount,
       renameCount,
       skippedRenameCount,
@@ -803,7 +853,7 @@ async function applyUnsupportedVariantPlans(): Promise<OperationResultPayload> {
   const operation = 'apply-unsupported-variants';
   const plans = pendingUnsupportedVariantPlans;
 
-  if (plans.length === 0 && pendingAlertMigrationComponentSetIds.length === 0) {
+  if (plans.length === 0 && pendingColorModeMigrationComponentSetIds.length === 0) {
     return {
       createdAt: new Date().toISOString(),
       operation,
@@ -904,9 +954,9 @@ async function applyUnsupportedVariantPlans(): Promise<OperationResultPayload> {
     }
   }
 
-  const alertMigration = await applyAlertColorMigration();
+  const colorModeMigration = await applyColorModeMigration();
   pendingUnsupportedVariantPlans = [];
-  pendingAlertMigrationComponentSetIds = [];
+  pendingColorModeMigrationComponentSetIds = [];
 
   const status = failed.length > 0 ? 'error' : 'success';
   return {
@@ -916,12 +966,13 @@ async function applyUnsupportedVariantPlans(): Promise<OperationResultPayload> {
     message:
       failed.length > 0
         ? `Removed ${removed.length}, renamed ${renamed.length}, failed ${failed.length}.`
-        : `Removed ${removed.length} variant${removed.length === 1 ? '' : 's'}, renamed ${renamed.length}, and migrated Alert colors.`,
+        : `Removed ${removed.length} variant${removed.length === 1 ? '' : 's'}, renamed ${renamed.length}, and migrated color-mode colors.`,
     details: {
       removedCount: removed.length,
       renamedCount: renamed.length,
       failedCount: failed.length,
-      alertMigration,
+      alertMigration: colorModeMigration,
+      colorModeMigration,
       removed,
       renamed,
       failed,
@@ -951,9 +1002,9 @@ async function getComponentSetsByIds(ids: string[]) {
   return componentSets;
 }
 
-function getAlertModeForComponent(component: ComponentNode, colorCollection: VariableCollection) {
-  const color = getVariantPropertyValue(component, 'color');
-  if (!color || !ALERT_COLOR_MODES.includes(normalizeToken(color))) {
+function getColorModeForComponent(component: ComponentNode, colorCollection: VariableCollection) {
+  const color = getColorVariantPropertyValue(component);
+  if (!color || !SEMANTIC_COLOR_GROUPS.includes(normalizeToken(color))) {
     return null;
   }
 
@@ -983,8 +1034,10 @@ function getPaintMigrationTarget(paint: Paint, colorVariablesByName: Map<string,
         return null;
       }
 
+      // Example: color/info/background-default should become the Color variable
+      // background-default, while the component variant gets mode=info.
       const [, modeName, ...scaleParts] = parts;
-      if (!ALERT_COLOR_MODES.includes(normalizeToken(modeName))) {
+      if (!SEMANTIC_COLOR_GROUPS.includes(normalizeToken(modeName))) {
         return null;
       }
 
@@ -1004,8 +1057,9 @@ async function setPaintsOnNode(node: SceneNode, propertyName: 'fills' | 'strokes
   }
 }
 
-async function migrateAlertPaintsOnNode(node: SceneNode, colorVariablesByName: Map<string, Variable>) {
+async function migrateSemanticPaintsOnNode(node: SceneNode, colorVariablesByName: Map<string, Variable>) {
   let migratedPaintCount = 0;
+  let failedPaintWriteCount = 0;
 
   for (const propertyName of ['fills', 'strokes'] as const) {
     const paintNode = node as SceneNode & Partial<MinimalFillsMixin & MinimalStrokesMixin>;
@@ -1020,6 +1074,7 @@ async function migrateAlertPaintsOnNode(node: SceneNode, colorVariablesByName: M
 
     const nextPaints: Paint[] = [];
     let changed = false;
+    let changedPaintCount = 0;
 
     for (const paint of paints) {
       const target = getPaintMigrationTarget(paint, colorVariablesByName);
@@ -1036,19 +1091,29 @@ async function migrateAlertPaintsOnNode(node: SceneNode, colorVariablesByName: M
 
       nextPaints.push(figma.variables.setBoundVariableForPaint(paint, 'color', targetVariable));
       changed = true;
-      migratedPaintCount += 1;
+      changedPaintCount += 1;
     }
 
     if (changed) {
-      await setPaintsOnNode(node, propertyName, nextPaints);
+      try {
+        await setPaintsOnNode(node, propertyName, nextPaints);
+        migratedPaintCount += changedPaintCount;
+      } catch {
+        // Figma may reject writes on some nested instance layers. Keep the rest
+        // of the migration moving and expose the count in the result payload.
+        failedPaintWriteCount += changedPaintCount;
+      }
     }
   }
 
-  return migratedPaintCount;
+  return {
+    migratedPaintCount,
+    failedPaintWriteCount,
+  };
 }
 
-async function applyAlertColorMigration(): Promise<JsonValue> {
-  const componentSetIds = pendingAlertMigrationComponentSetIds;
+async function applyColorModeMigration(): Promise<JsonValue> {
+  const componentSetIds = pendingColorModeMigrationComponentSetIds;
   if (componentSetIds.length === 0) {
     return {
       migratedComponentSetCount: 0,
@@ -1073,6 +1138,7 @@ async function applyAlertColorMigration(): Promise<JsonValue> {
   const skipped: JsonValue[] = [];
   let migratedVariantCount = 0;
   let migratedPaintCount = 0;
+  let failedPaintWriteCount = 0;
 
   for (const componentSet of componentSets) {
     for (const component of componentSet.children) {
@@ -1080,24 +1146,27 @@ async function applyAlertColorMigration(): Promise<JsonValue> {
         continue;
       }
 
-      const mode = getAlertModeForComponent(component, colorCollection);
+      const mode = getColorModeForComponent(component, colorCollection);
       if (!mode) {
         skipped.push({
           componentSetName: componentSet.name,
           componentName: component.name,
-          reason: 'Could not resolve Alert color mode.',
+          reason: 'Could not resolve color mode.',
         });
         continue;
       }
 
-      // Alert used to own color as variants. It now keeps variants, but their
-      // visual color should come from Color modes. This sets the mode directly
-      // on each Alert variant so its bound Color variables resolve correctly.
+      // These components keep their color variants, but the actual color should
+      // resolve through Color modes instead of semantic variables.
       const setExplicitVariableModeForCollection = component.setExplicitVariableModeForCollection.bind(component);
       setExplicitVariableModeForCollection(colorCollection, mode.modeId);
 
-      for (const node of collectEditableDescendants(component)) {
-        migratedPaintCount += await migrateAlertPaintsOnNode(node, colorVariablesByName);
+      // Unlike the broader scans, this intentionally walks into nested
+      // instances so their overridden fills/strokes can be rebound too.
+      for (const node of collectDescendantsIncludingInstances(component)) {
+        const paintMigration = await migrateSemanticPaintsOnNode(node, colorVariablesByName);
+        migratedPaintCount += paintMigration.migratedPaintCount;
+        failedPaintWriteCount += paintMigration.failedPaintWriteCount;
       }
 
       migratedVariantCount += 1;
@@ -1108,6 +1177,7 @@ async function applyAlertColorMigration(): Promise<JsonValue> {
     migratedComponentSetCount: componentSets.length,
     migratedVariantCount,
     migratedPaintCount,
+    failedPaintWriteCount,
     skipped,
   };
 }
@@ -1268,6 +1338,8 @@ async function scanMissingInstances(scope: FixScope, supportModeId: string | nul
     const mainComponentStartMs = nowMs();
     const mainComponent = await instance.getMainComponentAsync();
     getMainComponentMs += durationMs(mainComponentStartMs);
+    // Removed local variants still resolve to a detached local component with
+    // no parent. A hard missing component can also return null.
     const isMissing = !mainComponent || (mainComponent.remote === false && !mainComponent.parent);
 
     if (isMissing) {
@@ -1281,6 +1353,7 @@ async function scanMissingInstances(scope: FixScope, supportModeId: string | nul
       findTargetModeMs += durationMs(targetModeStartMs);
 
       const createPlanStartMs = nowMs();
+      const componentContext = getComponentContext(instance);
 
       plans.push({
         instanceId: instance.id,
@@ -1297,6 +1370,9 @@ async function scanMissingInstances(scope: FixScope, supportModeId: string | nul
         nonColorTokens: parsed?.nonColorTokens || [],
         status: 'blocked',
         reason: getBlockedReason(removedColor, targetMode, null),
+        componentContextType: componentContext?.type,
+        componentContextName: componentContext?.name,
+        componentContextSetName: componentContext?.componentSetName || undefined,
       });
       createPlanMs += durationMs(createPlanStartMs);
     }
