@@ -23,8 +23,12 @@ function durationMs(startMs) {
     return Date.now() - startMs;
 }
 function logTiming(label, startMs, details) {
-    const suffix = details ? ` ${JSON.stringify(details)}` : '';
-    console.log(`[Color migration] ${label}: ${durationMs(startMs)}ms${suffix}`);
+    // Keep timing instrumentation available while avoiding noisy plugin-console logs.
+    // const suffix = details ? ` ${JSON.stringify(details)}` : '';
+    // console.log(`[Color migration] ${label}: ${durationMs(startMs)}ms${suffix}`);
+    void label;
+    void startMs;
+    void details;
 }
 function postToUi(message) {
     figma.ui.postMessage(message);
@@ -931,7 +935,7 @@ async function scanMissingInstances(scope, supportModeId) {
     let findTargetComponentMs = 0;
     let createPlanMs = 0;
     let searchedWholeFileForComponentSets = false;
-    console.log(`[Color migration] Scan missing instances started ${JSON.stringify({ scope, supportModeId })}`);
+    // console.log(`[Color migration] Scan missing instances started ${JSON.stringify({ scope, supportModeId })}`);
     pendingMissingInstancePlans = [];
     postOperationProgress({
         operation,
@@ -1015,14 +1019,14 @@ async function scanMissingInstances(scope, supportModeId) {
             });
         }
         if ((index + 1) % 100 === 0 || index + 1 === instances.length) {
-            console.log(`[Color migration] Scan missing instances progress ${JSON.stringify({
-                processed: index + 1,
-                total: instances.length,
-                missingFound: plans.length,
-                elapsedMs: durationMs(scanStartMs),
-                getMainComponentMs,
-                findTargetComponentMs,
-            })}`);
+            // console.log(`[Color migration] Scan missing instances progress ${JSON.stringify({
+            //   processed: index + 1,
+            //   total: instances.length,
+            //   missingFound: plans.length,
+            //   elapsedMs: durationMs(scanStartMs),
+            //   getMainComponentMs,
+            //   findTargetComponentMs,
+            // })}`);
         }
     }
     pendingMissingInstancePlans = plans;
@@ -1072,15 +1076,15 @@ async function scanMissingInstances(scope, supportModeId) {
         finalizeMs,
         searchedWholeFileForComponentSets,
     };
-    console.log(`[Color migration] Scan missing instances finished ${JSON.stringify({
-        scope,
-        nodeCount: nodes.length,
-        instanceCount: instances.length,
-        missingCount: plans.length,
-        readyCount,
-        blockedCount,
-        timing,
-    })}`);
+    // console.log(`[Color migration] Scan missing instances finished ${JSON.stringify({
+    //   scope,
+    //   nodeCount: nodes.length,
+    //   instanceCount: instances.length,
+    //   missingCount: plans.length,
+    //   readyCount,
+    //   blockedCount,
+    //   timing,
+    // })}`);
     if (plans.length === 0) {
         return {
             createdAt: new Date().toISOString(),

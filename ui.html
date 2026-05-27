@@ -11,9 +11,7 @@
   }
 
   .app {
-    display: flex;
     min-height: 100vh;
-    flex-direction: column;
   }
 
   header {
@@ -35,10 +33,57 @@
   }
 
   main {
-    display: flex;
-    flex-direction: column;
+    display: grid;
     gap: 12px;
     padding: 16px;
+  }
+
+  .segmented {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 2px;
+    border: 1px solid var(--figma-color-border, #d9d9d9);
+    border-radius: 6px;
+    background: var(--figma-color-bg-secondary, #f7f7f7);
+    padding: 2px;
+  }
+
+  .segment {
+    min-height: 30px;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--figma-color-text-secondary, #6b6b6b);
+    cursor: pointer;
+    font: inherit;
+    font-weight: 550;
+    padding: 0 8px;
+  }
+
+  .segment.active {
+    background: var(--figma-color-bg, #ffffff);
+    color: var(--figma-color-text, #1e1e1e);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+  }
+
+  .step {
+    display: none;
+    gap: 12px;
+  }
+
+  .step.active {
+    display: grid;
+  }
+
+  .panel {
+    border: 1px solid var(--figma-color-border, #e5e5e5);
+    border-radius: 6px;
+    padding: 12px;
+  }
+
+  .panel-title {
+    margin-bottom: 6px;
+    font-weight: 650;
   }
 
   .toolbar {
@@ -93,24 +138,9 @@
     color: var(--figma-color-text-danger, #b3261e);
   }
 
-  button:hover {
-    border-color: var(--figma-color-border-strong, #b3b3b3);
-  }
-
   button:disabled {
     cursor: default;
     opacity: 0.45;
-  }
-
-  .panel {
-    border: 1px solid var(--figma-color-border, #e5e5e5);
-    border-radius: 6px;
-    padding: 12px;
-  }
-
-  .panel-title {
-    margin-bottom: 6px;
-    font-weight: 650;
   }
 
   .status-line {
@@ -118,7 +148,8 @@
     line-height: 1.45;
   }
 
-  .summary-line {
+  .summary-line,
+  .detail-meta {
     color: var(--figma-color-text-secondary, #6b6b6b);
     line-height: 1.45;
   }
@@ -140,57 +171,122 @@
     line-height: 1.35;
   }
 
-  .detail-meta {
-    color: var(--figma-color-text-secondary, #6b6b6b);
-    line-height: 1.45;
+  .busy-overlay {
+    position: fixed;
+    inset: 0;
+    display: none;
+    place-items: center;
+    backdrop-filter: blur(12px);
+    z-index: 10;
+  }
+
+  .busy-overlay.active {
+    display: grid;
+  }
+
+  .busy-card {
+    display: grid;
+    justify-items: center;
+    gap: 10px;
+    border: 1px solid var(--figma-color-border, #e5e5e5);
+    border-radius: 6px;
+    background: var(--figma-color-bg, #ffffff);
+    padding: 18px;
+    width: min(280px, calc(100vw - 48px));
+  }
+
+  .spinner {
+    width: 24px;
+    height: 24px;
+    border: 3px solid var(--figma-color-border, #d9d9d9);
+    border-top-color: var(--figma-color-bg-brand, #0d99ff);
+    border-radius: 999px;
+    animation: spin 0.8s linear infinite;
+  }
+
+  @keyframes spin {
+    to {
+      transform: rotate(360deg);
+    }
   }
 </style>
 
 <div class="app">
   <header>
     <h1>Color migration helper</h1>
-    <p>Prime variables and remove unsupported color variants before fixing affected instances.</p>
+    <p>Run the migration in three steps.</p>
   </header>
 
   <main>
-    <div class="toolbar">
-      <button class="primary" id="prime">Prime variables</button>
-      <button class="primary" id="scanVariants">Scan variants</button>
-      <button class="danger" id="applyVariants" disabled>Apply variant cleanup</button>
+    <div class="segmented" role="tablist">
+      <button class="segment active" data-step="prime" role="tab">1. Prime</button>
+      <button class="segment" data-step="variants" role="tab">2. Variants</button>
+      <button class="segment" data-step="instances" role="tab">3. Instances</button>
     </div>
 
-    <section class="panel">
-      <div class="panel-title">Missing instances</div>
-      <div class="control-row">
-        <label>
-          Scope
-          <select id="fixScope">
-            <option value="selection">Selection</option>
-            <option value="page">Current page</option>
-            <option value="file">Whole file</option>
-          </select>
-        </label>
-        <label>
-          Support becomes
-          <select id="supportMode"></select>
-        </label>
-      </div>
-      <div class="toolbar" style="margin-top: 8px;">
-        <button class="primary" id="scanMissing">Scan missing instances</button>
-        <button class="danger" id="applyMissing" disabled>Fix missing instances</button>
-      </div>
+    <section class="step active" id="step-prime">
+      <section class="panel">
+        <div class="panel-title">Prime variables</div>
+        <p>Rename Main color to Color and strip color/main/ from variables.</p>
+        <div class="toolbar" style="margin-top: 10px;">
+          <button class="primary" id="prime">Prime variables</button>
+        </div>
+      </section>
+    </section>
+
+    <section class="step" id="step-variants">
+      <section class="panel">
+        <div class="panel-title">Variant cleanup</div>
+        <p>Remove unsupported color variants, remove the color property from variants, and migrate Alert colors.</p>
+        <div class="toolbar" style="margin-top: 10px;">
+          <button class="primary" id="scanVariants">Scan variants</button>
+          <button class="danger" id="applyVariants" disabled>Apply variant cleanup</button>
+        </div>
+      </section>
+    </section>
+
+    <section class="step" id="step-instances">
+      <section class="panel">
+        <div class="panel-title">Missing instances</div>
+        <div class="control-row">
+          <label>
+            Scope
+            <select id="fixScope">
+              <option value="selection">Selection</option>
+              <option value="page">Current page</option>
+              <option value="file">Whole file</option>
+            </select>
+          </label>
+          <label>
+            Support becomes
+            <select id="supportMode"></select>
+          </label>
+        </div>
+        <div class="toolbar" style="margin-top: 10px;">
+          <button class="primary" id="scanMissing">Scan missing instances</button>
+          <button class="danger" id="applyMissing" disabled>Fix missing instances</button>
+        </div>
+      </section>
     </section>
 
     <section class="panel">
       <div class="panel-title">Result</div>
-      <div class="status-line" id="operationStatus">Ready.</div>
       <div class="summary-line" id="operationSummary">No migration step has been run yet.</div>
       <div class="details-list" id="operationDetails"></div>
     </section>
   </main>
+
+  <div class="busy-overlay" id="busyOverlay">
+    <div class="busy-card">
+      <div class="spinner"></div>
+      <div class="status-line" id="busyText">Working...</div>
+    </div>
+  </div>
 </div>
 
 <script>
+  const segmentButtons = Array.from(document.querySelectorAll('.segment'));
+  const stepPanels = Array.from(document.querySelectorAll('.step'));
   const primeButton = document.getElementById('prime');
   const scanVariantsButton = document.getElementById('scanVariants');
   const applyVariantsButton = document.getElementById('applyVariants');
@@ -198,15 +294,26 @@
   const supportModeSelect = document.getElementById('supportMode');
   const scanMissingButton = document.getElementById('scanMissing');
   const applyMissingButton = document.getElementById('applyMissing');
-  const operationStatus = document.getElementById('operationStatus');
   const operationSummary = document.getElementById('operationSummary');
   const operationDetails = document.getElementById('operationDetails');
+  const busyOverlay = document.getElementById('busyOverlay');
+  const busyText = document.getElementById('busyText');
 
   function send(message) {
     parent.postMessage({ pluginMessage: typeof message === 'string' ? { type: message } : message }, '*');
   }
 
-  function setBusy(isBusy) {
+  function selectStep(step) {
+    for (const button of segmentButtons) {
+      button.classList.toggle('active', button.dataset.step === step);
+    }
+
+    for (const panel of stepPanels) {
+      panel.classList.toggle('active', panel.id === `step-${step}`);
+    }
+  }
+
+  function setBusy(isBusy, message) {
     primeButton.disabled = isBusy;
     scanVariantsButton.disabled = isBusy;
     applyVariantsButton.disabled = isBusy || !applyVariantsButton.dataset.ready;
@@ -214,12 +321,15 @@
     supportModeSelect.disabled = isBusy;
     scanMissingButton.disabled = isBusy;
     applyMissingButton.disabled = isBusy || !applyMissingButton.dataset.ready;
+    busyOverlay.classList.toggle('active', isBusy);
+    if (message) {
+      busyText.textContent = message;
+    }
   }
 
   function startOperation(message) {
-    setBusy(true);
-    operationStatus.textContent = message;
-    operationSummary.textContent = 'Working...';
+    setBusy(true, message);
+    operationSummary.textContent = message;
     operationDetails.innerHTML = '';
   }
 
@@ -227,11 +337,12 @@
     const progress = typeof payload.processed === 'number' && typeof payload.total === 'number'
       ? ` (${payload.processed}/${payload.total})`
       : '';
-    operationStatus.textContent = `${payload.message}${progress}`;
+    const message = `${payload.message}${progress}`;
+    operationSummary.textContent = message;
+    busyText.textContent = message;
   }
 
   function renderOperationResult(payload) {
-    operationStatus.textContent = payload.message;
     applyVariantsButton.dataset.ready = payload.operation === 'scan-unsupported-variants' && payload.status === 'preview' ? 'true' : '';
     applyMissingButton.dataset.ready = payload.operation === 'scan-missing-instances' && payload.status === 'preview' ? 'true' : '';
     if (payload.operation === 'load-color-modes') {
@@ -335,7 +446,7 @@
     }
 
     if (payload.operation === 'scan-missing-instances') {
-      return `Scanned ${details.scannedInstanceCount || 0} instances. Ready ${details.readyCount || 0}, blocked ${details.blockedCount || 0}. Blocked means the plugin found a missing instance, but could not safely resolve its old color, target variant, or target mode.`;
+      return `Scanned ${details.scannedInstanceCount || 0} instances. Ready ${details.readyCount || 0}, blocked ${details.blockedCount || 0}.`;
     }
 
     if (payload.operation === 'apply-missing-instances') {
@@ -343,6 +454,10 @@
     }
 
     return payload.message;
+  }
+
+  for (const button of segmentButtons) {
+    button.onclick = () => selectStep(button.dataset.step);
   }
 
   primeButton.onclick = () => {
@@ -356,7 +471,7 @@
   };
 
   applyVariantsButton.onclick = () => {
-    const confirmed = window.confirm('This will remove unsupported color variants and rename remaining variants to remove the color property. Continue?');
+    const confirmed = window.confirm('This will remove unsupported color variants, migrate Alert colors, and rename remaining variants to remove the color property. Continue?');
     if (!confirmed) {
       return;
     }
