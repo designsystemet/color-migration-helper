@@ -121,28 +121,20 @@ let pendingMissingInstancePlans: MissingInstancePlan[] = [];
 
 figma.showUI(__html__, { width: 480, height: 460, themeColors: true });
 
-function nowMs() {
-  return Date.now();
-}
-
-function durationMs(startMs: number) {
-  return Date.now() - startMs;
-}
-
-function logTiming(label: string, startMs: number, details?: Record<string, unknown>) {
-  // Keep timing instrumentation available while avoiding noisy plugin-console logs.
-  // const suffix = details ? ` ${JSON.stringify(details)}` : '';
-  // console.log(`[Color migration] ${label}: ${durationMs(startMs)}ms${suffix}`);
-  void label;
-  void startMs;
-  void details;
-}
-
 function postToUi(message: UiMessage) {
   figma.ui.postMessage(message);
 }
 
+// Skip per-batch progress posts for small workloads — the UI flash is more
+// distracting than informative, and a short run finishes before progress is
+// even visible. Status messages without a total (e.g. "Loading...") always
+// post so the UI never appears stuck on initial load.
+const PROGRESS_THRESHOLD = 200;
+
 function postOperationProgress(payload: OperationProgressPayload) {
+  if (typeof payload.total === 'number' && payload.total < PROGRESS_THRESHOLD) {
+    return;
+  }
   postToUi({
     type: 'operation-progress',
     payload,
@@ -197,9 +189,30 @@ function isChildrenMixin(node: BaseNode): node is BaseNode & ChildrenMixin {
 }
 
 function shouldTraverseChildren(node: PageNode | SceneNode) {
-  // Most scans stop at instances for performance. The special paint migration
-  // has its own traversal because it intentionally edits nested instance layers.
+  // Stops walks at instance boundaries. Avoids forcing Figma's dynamic-page
+  // loader to synchronize the full descendant tree of every instance, which
+  // is the dominant cost in large files. Nested instances are component
+  // overrides anyway and cannot be acted on independently.
   return node.type !== 'INSTANCE' && isChildrenMixin(node);
+}
+
+function collectTopLevelInstances(root: SceneNode, into: InstanceNode[]) {
+  // Walk manually instead of using findAllWithCriteria: in dynamic-page mode
+  // findAllWithCriteria has to synchronize every instance's full descendant
+  // tree, which is very slow on files with deeply nested instance hierarchies
+  // (e.g. Core UI Kit). Stopping at instance boundaries avoids that cost and
+  // also skips nested instances we cannot swap independently anyway (they are
+  // component overrides, not standalone instances).
+  if (root.type === 'INSTANCE') {
+    into.push(root);
+    return;
+  }
+  if (!isChildrenMixin(root)) {
+    return;
+  }
+  for (const child of root.children) {
+    collectTopLevelInstances(child, into);
+  }
 }
 
 function parseRemovedComponentName(componentName: string): {
@@ -211,10 +224,14 @@ function parseRemovedComponentName(componentName: string): {
   const [componentSetName = componentName, ...variantTokens] = parts;
   const removedColor = variantTokens.find((token) => isUnsupportedColor(normalizeToken(token))) || null;
 
+  const nonColorTokens = removedColor
+    ? variantTokens.filter((token) => normalizeToken(token) !== normalizeToken(removedColor))
+    : variantTokens;
+
   return {
     componentSetName,
     removedColor,
-    nonColorTokens: variantTokens.filter((token) => normalizeToken(token) !== normalizeToken(removedColor || '')),
+    nonColorTokens,
   };
 }
 
@@ -291,24 +308,6 @@ function findTargetMode(collection: VariableCollection, removedColor: string, su
   }
 
   return findModeByName(collection, DEFAULT_COLOR_MODE_NAME) || collection.modes[0] || null;
-}
-
-function collectSceneNodes(root: PageNode | SceneNode): SceneNode[] {
-  const nodes: SceneNode[] = [];
-  const visit = (node: PageNode | SceneNode) => {
-    if (node.type !== 'PAGE') {
-      nodes.push(node);
-    }
-
-    if (shouldTraverseChildren(node)) {
-      for (const child of node.children) {
-        visit(child);
-      }
-    }
-  };
-
-  visit(root);
-  return nodes;
 }
 
 function collectDescendantsIncludingInstances(root: SceneNode): SceneNode[] {
@@ -536,6 +535,12 @@ async function primeVariables(): Promise<OperationResultPayload> {
   }
 
   const changed = renamedCollection !== null || renamedVariables.length > 0;
+  if (changed) {
+    // Close this apply as its own undo step so Cmd+Z reverses just the prime
+    // without rolling back later migration steps in the same plugin session.
+    figma.commitUndo();
+  }
+
   return {
     createdAt: new Date().toISOString(),
     operation,
@@ -566,7 +571,6 @@ async function getAllComponentSets(): Promise<ComponentSetNode[]> {
     if (node.type === 'COMPONENT_SET') {
       componentSets.push(node);
     }
-
     if (shouldTraverseChildren(node)) {
       for (const child of node.children) {
         visit(child);
@@ -577,7 +581,6 @@ async function getAllComponentSets(): Promise<ComponentSetNode[]> {
   for (const page of figma.root.children) {
     visit(page);
   }
-
   return componentSets;
 }
 
@@ -587,7 +590,6 @@ function collectComponentSets(root: PageNode | SceneNode, wantedNames?: Set<stri
     if (node.type === 'COMPONENT_SET' && (!wantedNames || wantedNames.has(normalizeToken(node.name)))) {
       componentSets.push(node);
     }
-
     if (shouldTraverseChildren(node)) {
       for (const child of node.children) {
         visit(child);
@@ -631,15 +633,19 @@ async function findComponentSetsByNames(wantedNames: Set<string>, scope: FixScop
 
   // Loading every page is expensive in large files, so only do it when the
   // target set is not on the current page or the user explicitly scans the file.
+  // Keep the current-page results we already have and only scan the other pages.
   await figma.loadAllPagesAsync();
-  const allSets: ComponentSetNode[] = [];
-  const allFoundIds = new Set<string>();
+  const allSets: ComponentSetNode[] = [...currentPageSets];
+  const seenIds = new Set(currentPageSets.map((componentSet) => componentSet.id));
 
   for (const page of figma.root.children) {
+    if (page.id === figma.currentPage.id) {
+      continue;
+    }
     for (const componentSet of collectComponentSets(page, wantedNames)) {
-      if (!allFoundIds.has(componentSet.id)) {
+      if (!seenIds.has(componentSet.id)) {
         allSets.push(componentSet);
-        allFoundIds.add(componentSet.id);
+        seenIds.add(componentSet.id);
       }
     }
   }
@@ -650,33 +656,31 @@ async function findComponentSetsByNames(wantedNames: Set<string>, scope: FixScop
   };
 }
 
-async function getNodesForScope(scope: FixScope): Promise<SceneNode[]> {
+async function getInstancesForScope(scope: FixScope): Promise<InstanceNode[]> {
+  const instances: InstanceNode[] = [];
+
   if (scope === 'selection') {
-    const nodes: SceneNode[] = [];
-    const visit = (node: SceneNode) => {
-      nodes.push(node);
-
-      if (shouldTraverseChildren(node)) {
-        for (const child of node.children) {
-          visit(child);
-        }
-      }
-    };
-
-    for (const node of figma.currentPage.selection) {
-      visit(node);
+    for (const root of figma.currentPage.selection) {
+      collectTopLevelInstances(root, instances);
     }
-
-    return nodes;
+    return instances;
   }
 
   if (scope === 'page') {
     await figma.currentPage.loadAsync();
-    return collectSceneNodes(figma.currentPage);
+    for (const child of figma.currentPage.children) {
+      collectTopLevelInstances(child, instances);
+    }
+    return instances;
   }
 
   await figma.loadAllPagesAsync();
-  return figma.root.children.flatMap((page) => collectSceneNodes(page));
+  for (const page of figma.root.children) {
+    for (const child of page.children) {
+      collectTopLevelInstances(child, instances);
+    }
+  }
+  return instances;
 }
 
 async function loadColorModes(): Promise<OperationResultPayload> {
@@ -888,81 +892,93 @@ async function applyUnsupportedVariantPlans(): Promise<OperationResultPayload> {
   });
 
   for (const plan of plans) {
-    for (const variant of plan.variantsToRename) {
-      try {
-        const node = await figma.getNodeByIdAsync(variant.id);
-        if (node?.type !== 'COMPONENT') {
-          failed.push({
-            id: variant.id,
-            name: variant.from,
-            action: 'rename',
-            reason: 'Component no longer exists.',
-          });
-        } else {
-          node.name = variant.to;
-          renamed.push({
-            id: variant.id,
-            from: variant.from,
-            to: variant.to,
-            componentSetName: plan.componentSetName,
-          });
-        }
-      } catch (error) {
+    // Batch the node lookups per plan; mutations (.name= / .remove()) still run
+    // sequentially after the batch so they don't race against each other.
+    const renameNodes = await Promise.all(
+      plan.variantsToRename.map((variant) => figma.getNodeByIdAsync(variant.id).catch((error: unknown) => (error instanceof Error ? error : new Error(String(error))))),
+    );
+
+    for (let i = 0; i < plan.variantsToRename.length; i += 1) {
+      const variant = plan.variantsToRename[i];
+      const result = renameNodes[i];
+
+      if (result instanceof Error) {
         failed.push({
           id: variant.id,
           name: variant.from,
           action: 'rename',
-          reason: error instanceof Error ? error.message : String(error),
+          reason: result.message,
+        });
+      } else if (result?.type !== 'COMPONENT') {
+        failed.push({
+          id: variant.id,
+          name: variant.from,
+          action: 'rename',
+          reason: 'Component no longer exists.',
+        });
+      } else {
+        result.name = variant.to;
+        renamed.push({
+          id: variant.id,
+          from: variant.from,
+          to: variant.to,
+          componentSetName: plan.componentSetName,
         });
       }
 
       processed += 1;
-      postOperationProgress({
-        operation,
-        message: 'Applying unsupported variant cleanup...',
-        processed,
-        total: totalSteps,
-      });
     }
 
-    for (const variant of plan.variantsToRemove) {
-      try {
-        const node = await figma.getNodeByIdAsync(variant.id);
-        if (node?.type !== 'COMPONENT') {
-          failed.push({
-            id: variant.id,
-            name: variant.name,
-            color: variant.color,
-            action: 'remove',
-            reason: 'Component no longer exists.',
-          });
-        } else {
-          node.remove();
-          removed.push({
-            id: variant.id,
-            name: variant.name,
-            color: variant.color,
-            componentSetName: plan.componentSetName,
-          });
-        }
-      } catch (error) {
+    postOperationProgress({
+      operation,
+      message: 'Applying unsupported variant cleanup...',
+      processed,
+      total: totalSteps,
+    });
+
+    const removeNodes = await Promise.all(
+      plan.variantsToRemove.map((variant) => figma.getNodeByIdAsync(variant.id).catch((error: unknown) => (error instanceof Error ? error : new Error(String(error))))),
+    );
+
+    for (let i = 0; i < plan.variantsToRemove.length; i += 1) {
+      const variant = plan.variantsToRemove[i];
+      const result = removeNodes[i];
+
+      if (result instanceof Error) {
         failed.push({
           id: variant.id,
           name: variant.name,
           color: variant.color,
           action: 'remove',
-          reason: error instanceof Error ? error.message : String(error),
+          reason: result.message,
+        });
+      } else if (result?.type !== 'COMPONENT') {
+        failed.push({
+          id: variant.id,
+          name: variant.name,
+          color: variant.color,
+          action: 'remove',
+          reason: 'Component no longer exists.',
+        });
+      } else {
+        result.remove();
+        removed.push({
+          id: variant.id,
+          name: variant.name,
+          color: variant.color,
+          componentSetName: plan.componentSetName,
         });
       }
 
       processed += 1;
-      postOperationProgress({
-        operation,
-        message: 'Applying unsupported variant cleanup...',
-        processed,
-        total: totalSteps,
-      });
     }
+
+    postOperationProgress({
+      operation,
+      message: 'Applying unsupported variant cleanup...',
+      processed,
+      total: totalSteps,
+    });
   }
 
   const colorModeMigration = await applyColorModeMigration();
@@ -970,6 +986,10 @@ async function applyUnsupportedVariantPlans(): Promise<OperationResultPayload> {
   pendingColorModeMigrationComponentSetIds = [];
 
   const status = failed.length > 0 ? 'error' : 'success';
+  if (status === 'success') {
+    figma.commitUndo();
+  }
+
   return {
     createdAt: new Date().toISOString(),
     operation,
@@ -1109,10 +1129,18 @@ async function migrateSemanticPaintsOnNode(node: SceneNode, colorVariablesByName
       try {
         await setPaintsOnNode(node, propertyName, nextPaints);
         migratedPaintCount += changedPaintCount;
-      } catch {
+      } catch (error) {
         // Figma may reject writes on some nested instance layers. Keep the rest
-        // of the migration moving and expose the count in the result payload.
+        // of the migration moving, surface the count in the result payload, and
+        // log per-node details to the plugin console for debugging.
         failedPaintWriteCount += changedPaintCount;
+        console.warn('[Color migration] Failed to write paints', {
+          nodeId: node.id,
+          nodeName: node.name,
+          property: propertyName,
+          changedPaintCount,
+          error: error instanceof Error ? error.message : String(error),
+        });
       }
     }
   }
@@ -1237,6 +1265,12 @@ function findTargetComponent(componentSets: ComponentSetNode[], componentSetName
   }
 
   if (candidates.length === 0 && componentSet.children.length === 1 && componentSet.children[0].type === 'COMPONENT') {
+    // Fallback for component sets that have collapsed to a single variant after
+    // the variant cleanup step. The old slash-separated tokens from the missing
+    // instance name no longer match any variant property values (color was the
+    // only differentiator), but there is exactly one target left, so the swap
+    // is unambiguous. Without this, every missing instance in a now-single-
+    // variant set would be marked blocked.
     return {
       component: componentSet.children[0],
       reason: 'matched the only remaining variant',
@@ -1282,19 +1316,7 @@ function getBlockedReason(
 
 async function scanMissingInstances(scope: FixScope, supportModeId: string | null): Promise<OperationResultPayload> {
   const operation = 'scan-missing-instances';
-  const scanStartMs = nowMs();
-  let getColorCollectionMs = 0;
-  let getScopeNodesMs = 0;
-  let filterInstancesMs = 0;
-  let getComponentSetsMs = 0;
-  let getMainComponentMs = 0;
-  let parseMs = 0;
-  let findTargetModeMs = 0;
-  let findTargetComponentMs = 0;
-  let createPlanMs = 0;
-  let searchedWholeFileForComponentSets = false;
 
-  // console.log(`[Color migration] Scan missing instances started ${JSON.stringify({ scope, supportModeId })}`);
   pendingMissingInstancePlans = [];
 
   postOperationProgress({
@@ -1302,14 +1324,7 @@ async function scanMissingInstances(scope: FixScope, supportModeId: string | nul
     message: 'Loading color modes...',
   });
 
-  const colorCollectionStartMs = nowMs();
   const colorCollection = await getColorCollection();
-  getColorCollectionMs += durationMs(colorCollectionStartMs);
-  logTiming('Loaded color collection', colorCollectionStartMs, {
-    found: Boolean(colorCollection),
-    name: colorCollection?.name || null,
-    modeCount: colorCollection?.modes.length || 0,
-  });
 
   if (!colorCollection) {
     return {
@@ -1328,42 +1343,24 @@ async function scanMissingInstances(scope: FixScope, supportModeId: string | nul
     message: 'Loading scope...',
   });
 
-  const scopeNodesStartMs = nowMs();
-  const nodes = await getNodesForScope(scope);
-  getScopeNodesMs += durationMs(scopeNodesStartMs);
-  logTiming('Loaded scope nodes', scopeNodesStartMs, {
-    nodeCount: nodes.length,
-  });
-
-  const filterInstancesStartMs = nowMs();
-  const instances = nodes.filter((node): node is InstanceNode => node.type === 'INSTANCE');
-  filterInstancesMs += durationMs(filterInstancesStartMs);
-  logTiming('Filtered instances', filterInstancesStartMs, {
-    instanceCount: instances.length,
-  });
+  const instances = await getInstancesForScope(scope);
 
   const plans: MissingInstancePlan[] = [];
 
   for (let index = 0; index < instances.length; index += 1) {
     const instance = instances[index];
-    const mainComponentStartMs = nowMs();
     const mainComponent = await instance.getMainComponentAsync();
-    getMainComponentMs += durationMs(mainComponentStartMs);
-    // Removed local variants still resolve to a detached local component with
-    // no parent. A hard missing component can also return null.
+    // A removed local variant leaves behind a detached ComponentNode: it still
+    // resolves (so mainComponent is not null), is local (remote=false), but has
+    // no parent because its ComponentSet child slot was deleted. A hard-missing
+    // main component (e.g. removed library) returns null instead. Both count as
+    // "missing" for migration purposes.
     const isMissing = !mainComponent || (mainComponent.remote === false && !mainComponent.parent);
 
     if (isMissing) {
-      const parseStartMs = nowMs();
       const parsed = mainComponent ? parseRemovedComponentName(mainComponent.name) : null;
       const removedColor = parsed?.removedColor || null;
-      parseMs += durationMs(parseStartMs);
-
-      const targetModeStartMs = nowMs();
       const targetMode = removedColor ? findTargetMode(colorCollection, removedColor, supportModeId) : null;
-      findTargetModeMs += durationMs(targetModeStartMs);
-
-      const createPlanStartMs = nowMs();
       const componentContext = getComponentContext(instance);
 
       plans.push({
@@ -1385,7 +1382,6 @@ async function scanMissingInstances(scope: FixScope, supportModeId: string | nul
         componentContextName: componentContext?.name,
         componentContextSetName: componentContext?.componentSetName || undefined,
       });
-      createPlanMs += durationMs(createPlanStartMs);
     }
 
     if ((index + 1) % 10 === 0 || index + 1 === instances.length) {
@@ -1396,41 +1392,20 @@ async function scanMissingInstances(scope: FixScope, supportModeId: string | nul
         total: instances.length,
       });
     }
-
-    if ((index + 1) % 100 === 0 || index + 1 === instances.length) {
-      // console.log(`[Color migration] Scan missing instances progress ${JSON.stringify({
-      //   processed: index + 1,
-      //   total: instances.length,
-      //   missingFound: plans.length,
-      //   elapsedMs: durationMs(scanStartMs),
-      //   getMainComponentMs,
-      //   findTargetComponentMs,
-      // })}`);
-    }
   }
 
   pendingMissingInstancePlans = plans;
 
   if (plans.length > 0) {
     const wantedNames = getMissingComponentSetNames(plans);
-    const componentSetsStartMs = nowMs();
     const componentSetLookup = await findComponentSetsByNames(wantedNames, scope);
     const componentSets = componentSetLookup.componentSets;
-    searchedWholeFileForComponentSets = componentSetLookup.searchedWholeFile;
-    getComponentSetsMs += durationMs(componentSetsStartMs);
-    logTiming('Loaded target component sets', componentSetsStartMs, {
-      wantedComponentSetCount: wantedNames.size,
-      componentSetCount: componentSets.length,
-      searchedWholeFile: searchedWholeFileForComponentSets,
-    });
 
     for (const plan of plans) {
-      const targetComponentStartMs = nowMs();
       const targetComponentResult =
         plan.componentSetName !== 'Unknown'
           ? findTargetComponent(componentSets, plan.componentSetName, plan.nonColorTokens)
           : null;
-      findTargetComponentMs += durationMs(targetComponentStartMs);
 
       const targetComponent = targetComponentResult?.component || null;
       plan.targetComponentId = targetComponent?.id || null;
@@ -1438,6 +1413,8 @@ async function scanMissingInstances(scope: FixScope, supportModeId: string | nul
       plan.targetPropertyValues = targetComponentResult?.targetPropertyValues || undefined;
       plan.targetCandidateCount = targetComponentResult?.candidateCount;
       plan.targetCandidateNames = targetComponentResult?.candidateNames;
+      // Ready requires all three: a parseable color, a resolved target mode,
+      // and exactly one matching variant in the current component set.
       plan.status = plan.removedColor !== 'unknown' && plan.targetModeId && targetComponent ? 'ready' : 'blocked';
       plan.reason = getBlockedReason(
         plan.removedColor === 'unknown' ? null : plan.removedColor,
@@ -1447,35 +1424,8 @@ async function scanMissingInstances(scope: FixScope, supportModeId: string | nul
     }
   }
 
-  const finalizeStartMs = nowMs();
   const readyCount = plans.filter((plan) => plan.status === 'ready').length;
   const blockedCount = plans.length - readyCount;
-  const finalizeMs = durationMs(finalizeStartMs);
-
-  const timing = {
-    totalMs: durationMs(scanStartMs),
-    getColorCollectionMs,
-    getScopeNodesMs,
-    filterInstancesMs,
-    getComponentSetsMs,
-    getMainComponentMs,
-    parseMs,
-    findTargetModeMs,
-    findTargetComponentMs,
-    createPlanMs,
-    finalizeMs,
-    searchedWholeFileForComponentSets,
-  };
-
-  // console.log(`[Color migration] Scan missing instances finished ${JSON.stringify({
-  //   scope,
-  //   nodeCount: nodes.length,
-  //   instanceCount: instances.length,
-  //   missingCount: plans.length,
-  //   readyCount,
-  //   blockedCount,
-  //   timing,
-  // })}`);
 
   if (plans.length === 0) {
     return {
@@ -1486,7 +1436,6 @@ async function scanMissingInstances(scope: FixScope, supportModeId: string | nul
       details: {
         scope,
         scannedInstanceCount: instances.length,
-        timing,
       },
     };
   }
@@ -1501,7 +1450,6 @@ async function scanMissingInstances(scope: FixScope, supportModeId: string | nul
       scannedInstanceCount: instances.length,
       readyCount,
       blockedCount,
-      timing,
       plans,
     },
   };
@@ -1538,60 +1486,95 @@ async function applyMissingInstancePlans(): Promise<OperationResultPayload> {
   const failed: JsonValue[] = [];
   let skippedModeCount = 0;
 
-  for (let index = 0; index < plans.length; index += 1) {
-    const plan = plans[index];
+  // Batch instance + target component lookups in parallel; mutations
+  // (swapComponent, setExplicitVariableModeForCollection) run sequentially
+  // afterwards to avoid races.
+  const APPLY_BATCH_SIZE = 50;
+  let processed = 0;
 
-    try {
-      const instance = await figma.getNodeByIdAsync(plan.instanceId);
-      const targetComponent = plan.targetComponentId ? await figma.getNodeByIdAsync(plan.targetComponentId) : null;
+  for (let start = 0; start < plans.length; start += APPLY_BATCH_SIZE) {
+    const batch = plans.slice(start, start + APPLY_BATCH_SIZE);
+    const lookups = await Promise.all(
+      batch.map(async (plan) => {
+        try {
+          const [instance, targetComponent] = await Promise.all([
+            figma.getNodeByIdAsync(plan.instanceId),
+            plan.targetComponentId ? figma.getNodeByIdAsync(plan.targetComponentId) : Promise.resolve(null),
+          ]);
+          return { instance, targetComponent, error: null as Error | null };
+        } catch (error: unknown) {
+          return {
+            instance: null,
+            targetComponent: null,
+            error: error instanceof Error ? error : new Error(String(error)),
+          };
+        }
+      }),
+    );
 
-      if (instance?.type !== 'INSTANCE') {
-        throw new Error('Instance no longer exists.');
+    for (let i = 0; i < batch.length; i += 1) {
+      const plan = batch[i];
+      const { instance, targetComponent, error } = lookups[i];
+
+      try {
+        if (error) {
+          throw error;
+        }
+
+        if (instance?.type !== 'INSTANCE') {
+          throw new Error('Instance no longer exists.');
+        }
+
+        if (targetComponent?.type !== 'COMPONENT') {
+          throw new Error('Target component no longer exists.');
+        }
+
+        const modeId = plan.targetModeId;
+        if (!modeId) {
+          throw new Error('Missing target mode.');
+        }
+
+        instance.swapComponent(targetComponent);
+        const shouldSkipMode = shouldSkipModeForMissingInstance(plan);
+        if (shouldSkipMode) {
+          skippedModeCount += 1;
+        } else {
+          const setExplicitVariableModeForCollection = instance.setExplicitVariableModeForCollection.bind(instance);
+          setExplicitVariableModeForCollection(colorCollection, modeId);
+        }
+
+        fixed.push({
+          instanceId: plan.instanceId,
+          instanceName: plan.instanceName,
+          targetComponentName: plan.targetComponentName,
+          targetModeName: shouldSkipMode ? null : plan.targetModeName,
+          skippedMode: shouldSkipMode,
+          skippedModeReason: shouldSkipMode ? 'Skipped neutral mode inside TableColumn.' : null,
+        });
+      } catch (mutationError: unknown) {
+        failed.push({
+          instanceId: plan.instanceId,
+          instanceName: plan.instanceName,
+          reason: mutationError instanceof Error ? mutationError.message : String(mutationError),
+        });
       }
 
-      if (targetComponent?.type !== 'COMPONENT') {
-        throw new Error('Target component no longer exists.');
-      }
-
-      const modeId = plan.targetModeId;
-      if (!modeId) {
-        throw new Error('Missing target mode.');
-      }
-
-      instance.swapComponent(targetComponent);
-      const shouldSkipMode = shouldSkipModeForMissingInstance(plan);
-      if (shouldSkipMode) {
-        skippedModeCount += 1;
-      } else {
-        const setExplicitVariableModeForCollection = instance.setExplicitVariableModeForCollection.bind(instance);
-        setExplicitVariableModeForCollection(colorCollection, modeId);
-      }
-
-      fixed.push({
-        instanceId: plan.instanceId,
-        instanceName: plan.instanceName,
-        targetComponentName: plan.targetComponentName,
-        targetModeName: shouldSkipMode ? null : plan.targetModeName,
-        skippedMode: shouldSkipMode,
-        skippedModeReason: shouldSkipMode ? 'Skipped neutral mode inside TableColumn.' : null,
-      });
-    } catch (error) {
-      failed.push({
-        instanceId: plan.instanceId,
-        instanceName: plan.instanceName,
-        reason: error instanceof Error ? error.message : String(error),
-      });
+      processed += 1;
     }
 
     postOperationProgress({
       operation,
       message: 'Fixing missing instances...',
-      processed: index + 1,
+      processed,
       total: plans.length,
     });
   }
 
   pendingMissingInstancePlans = [];
+
+  if (fixed.length > 0) {
+    figma.commitUndo();
+  }
 
   return {
     createdAt: new Date().toISOString(),

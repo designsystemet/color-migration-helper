@@ -26,16 +26,6 @@ The plugin has three main steps:
    - Lets the user choose which Color mode should replace the old `support` category.
    - Skips setting explicit `neutral` mode for nested missing instances inside `TableColumn`, because those subcomponents were wired to neutral by mistake and should inherit/default instead.
 
-## Temporary Reporting
-
-The UI currently includes a Markdown report after scan operations. This is meant as a temporary audit helper and can be removed later.
-
-Reports include:
-
-- Variants that will be deleted, grouped by page and component set.
-- Missing instances inside components/component sets.
-- Missing instances outside components, grouped by page and counted by old variant.
-
 ## Development
 
 Install dependencies:
