@@ -14,18 +14,6 @@
     min-height: 100vh;
   }
 
-  header {
-    border-bottom: 1px solid var(--figma-color-border, #e5e5e5);
-    padding: 16px;
-  }
-
-  h1 {
-    margin: 0 0 8px;
-    font-size: 16px;
-    font-weight: 650;
-    line-height: 1.3;
-  }
-
   p {
     margin: 0;
     color: var(--figma-color-text-secondary, #6b6b6b);
@@ -81,6 +69,10 @@
     padding: 12px;
   }
 
+  .is-hidden {
+    display: none;
+  }
+
   .panel-title {
     margin-bottom: 6px;
     font-weight: 650;
@@ -96,6 +88,10 @@
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 8px;
+  }
+
+  .control-row.stacked {
+    grid-template-columns: 1fr;
   }
 
   label {
@@ -207,44 +203,51 @@
 </style>
 
 <div class="app">
-  <header>
-    <h1>Color migration helper</h1>
-    <p>Run the migration in three steps.</p>
-  </header>
-
   <main>
     <div class="segmented" role="tablist">
-      <button class="segment active" data-step="prime" role="tab" aria-selected="true" aria-controls="step-prime" id="tab-prime">1. Prime</button>
-      <button class="segment" data-step="variants" role="tab" aria-selected="false" aria-controls="step-variants" id="tab-variants">2. Variants</button>
-      <button class="segment" data-step="instances" role="tab" aria-selected="false" aria-controls="step-instances" id="tab-instances">3. Instances</button>
+      <button class="segment active" data-step="prime" role="tab" aria-selected="true" aria-controls="step-prime" id="tab-prime">1. Prepare</button>
+      <button class="segment" data-step="variants" role="tab" aria-selected="false" aria-controls="step-variants" id="tab-variants">2. Remove variants</button>
+      <button class="segment" data-step="instances" role="tab" aria-selected="false" aria-controls="step-instances" id="tab-instances">3. Update instances</button>
     </div>
 
     <section class="step active" id="step-prime" role="tabpanel" aria-labelledby="tab-prime" tabindex="0">
       <section class="panel">
-        <div class="panel-title">Prime variables</div>
-        <p>Renames the 'Main color' variable collection to 'Color' and removes the 'color/main/' prefix from variable names.</p>
+        <div class="panel-title">Prepare variables</div>
+        <p>Rename the Main color collection to Color and remove color/main/ from variable names.</p>
         <div class="toolbar" style="margin-top: 10px;">
-          <button class="primary" id="prime">Prime variables</button>
+          <button class="primary" id="prime">Prepare variables</button>
         </div>
+      </section>
+      <section class="panel is-hidden" id="primeResultPanel">
+        <div class="panel-title">Result</div>
+        <div class="summary-line" id="primeSummary"></div>
+        <div class="details-list" id="primeDetails"></div>
       </section>
     </section>
 
     <section class="step" id="step-variants" role="tabpanel" aria-labelledby="tab-variants" tabindex="0">
       <section class="panel">
-        <div class="panel-title">Clean up variants</div>
-        <p>Removes unsupported color variants (neutral, support, danger, info, warning, success), updates remaining variant names, and migrates Alert and ValidationMessage to use color modes.</p>
+        <div class="panel-title">Remove variants</div>
+        <p>Remove old color variants, update variant names, and move Alert and ValidationMessage colors to modes.</p>
         <div class="toolbar" style="margin-top: 10px;">
           <button class="primary" id="scanVariants">Scan variants</button>
-          <button id="applyVariants" disabled>Apply cleanup</button>
+        </div>
+      </section>
+      <section class="panel is-hidden" id="variantsResultPanel">
+        <div class="panel-title">Variant scan result</div>
+        <div class="summary-line" id="variantsSummary"></div>
+        <div class="details-list" id="variantsDetails"></div>
+        <div class="toolbar" style="margin-top: 10px;">
+          <button class="primary" id="applyVariants" disabled>Remove and update variants</button>
         </div>
       </section>
     </section>
 
     <section class="step" id="step-instances" role="tabpanel" aria-labelledby="tab-instances" tabindex="0">
       <section class="panel">
-        <div class="panel-title">Fix missing instances</div>
-        <p>Finds instances whose old color variant was removed and swaps them to the matching current variant.</p>
-        <div class="control-row" style="margin-top: 10px;">
+        <div class="panel-title">Update missing instances</div>
+        <p>Find instances that used old color variants and move them to the matching current variant.</p>
+        <div class="control-row stacked" style="margin-top: 10px;">
           <label>
             Scope
             <select id="fixScope">
@@ -254,21 +257,22 @@
             </select>
           </label>
           <label>
-            Replace 'support' with
+            Use this mode for old support variants
             <select id="supportMode"></select>
           </label>
         </div>
         <div class="toolbar" style="margin-top: 10px;">
           <button class="primary" id="scanMissing">Scan instances</button>
-          <button id="applyMissing" disabled>Fix instances</button>
         </div>
       </section>
-    </section>
-
-    <section class="panel">
-      <div class="panel-title">Result</div>
-      <div class="summary-line" id="operationSummary">No migration step has been run yet.</div>
-      <div class="details-list" id="operationDetails"></div>
+      <section class="panel is-hidden" id="instancesResultPanel">
+        <div class="panel-title">Instance scan result</div>
+        <div class="summary-line" id="instancesSummary"></div>
+        <div class="details-list" id="instancesDetails"></div>
+        <div class="toolbar" style="margin-top: 10px;">
+          <button class="primary" id="applyMissing" disabled>Update instances</button>
+        </div>
+      </section>
     </section>
   </main>
 
@@ -290,10 +294,19 @@
   const supportModeSelect = document.getElementById('supportMode');
   const scanMissingButton = document.getElementById('scanMissing');
   const applyMissingButton = document.getElementById('applyMissing');
-  const operationSummary = document.getElementById('operationSummary');
-  const operationDetails = document.getElementById('operationDetails');
+  const primeResultPanel = document.getElementById('primeResultPanel');
+  const primeSummary = document.getElementById('primeSummary');
+  const primeDetails = document.getElementById('primeDetails');
+  const variantsResultPanel = document.getElementById('variantsResultPanel');
+  const variantsSummary = document.getElementById('variantsSummary');
+  const variantsDetails = document.getElementById('variantsDetails');
+  const instancesResultPanel = document.getElementById('instancesResultPanel');
+  const instancesSummary = document.getElementById('instancesSummary');
+  const instancesDetails = document.getElementById('instancesDetails');
   const busyOverlay = document.getElementById('busyOverlay');
   const busyText = document.getElementById('busyText');
+  let activeSummary = primeSummary;
+  let activeDetails = primeDetails;
 
   function send(message) {
     parent.postMessage({ pluginMessage: typeof message === 'string' ? { type: message } : message }, '*');
@@ -325,48 +338,45 @@
     }
   }
 
-  function startOperation(message) {
+  function setActiveResult(panel, summary, details) {
+    activeSummary = summary;
+    activeDetails = details;
+    panel.classList.remove('is-hidden');
+  }
+
+  function startOperation(message, panel, summary, details) {
+    setActiveResult(panel, summary, details);
     setBusy(true, message);
-    operationSummary.textContent = message;
-    operationDetails.innerHTML = '';
+    activeSummary.textContent = message;
+    activeDetails.innerHTML = '';
   }
 
   function activateVariantApply(details) {
     const total = (details.removeCount || 0) + (details.renameCount || 0) + (details.colorModeMigrationCount || details.alertMigrationCount || 0);
-    applyVariantsButton.textContent = total > 0 ? `Apply cleanup (${total})` : 'Apply cleanup';
+    applyVariantsButton.textContent = total > 0 ? `Remove and update variants (${total})` : 'Remove and update variants';
     applyVariantsButton.dataset.ready = total > 0 ? 'true' : '';
-    if (total > 0) {
-      applyVariantsButton.classList.add('primary');
-      scanVariantsButton.classList.remove('primary');
-    }
+    applyVariantsButton.disabled = total === 0;
   }
 
   function resetVariantButtons() {
-    applyVariantsButton.textContent = 'Apply cleanup';
+    applyVariantsButton.textContent = 'Remove and update variants';
     applyVariantsButton.dataset.ready = '';
-    applyVariantsButton.classList.remove('primary');
     applyVariantsButton.disabled = true;
-    scanVariantsButton.classList.add('primary');
   }
 
   function activateMissingApply(details) {
     const readyCount = details.readyCount || 0;
     applyMissingButton.textContent = readyCount > 0
-      ? `Fix ${readyCount} instance${readyCount === 1 ? '' : 's'}`
-      : 'Fix instances';
+      ? `Update ${readyCount} instance${readyCount === 1 ? '' : 's'}`
+      : 'Update instances';
     applyMissingButton.dataset.ready = readyCount > 0 ? 'true' : '';
-    if (readyCount > 0) {
-      applyMissingButton.classList.add('primary');
-      scanMissingButton.classList.remove('primary');
-    }
+    applyMissingButton.disabled = readyCount === 0;
   }
 
   function resetMissingButtons() {
-    applyMissingButton.textContent = 'Fix instances';
+    applyMissingButton.textContent = 'Update instances';
     applyMissingButton.dataset.ready = '';
-    applyMissingButton.classList.remove('primary');
     applyMissingButton.disabled = true;
-    scanMissingButton.classList.add('primary');
   }
 
   function renderOperationProgress(payload) {
@@ -374,14 +384,20 @@
       ? ` (${payload.processed}/${payload.total})`
       : '';
     const message = `${payload.message}${progress}`;
-    operationSummary.textContent = message;
+    activeSummary.textContent = message;
     busyText.textContent = message;
   }
 
   function renderOperationResult(payload) {
     if (payload.operation === 'load-color-modes') {
       renderColorModes(payload);
-    } else if (payload.operation === 'scan-unsupported-variants' && payload.status === 'preview') {
+      setBusy(false);
+      return;
+    }
+
+    setResultTargetForOperation(payload.operation);
+
+    if (payload.operation === 'scan-unsupported-variants' && payload.status === 'preview') {
       activateVariantApply(payload.details || {});
     } else if (payload.operation === 'scan-missing-instances' && payload.status === 'preview') {
       activateMissingApply(payload.details || {});
@@ -392,12 +408,28 @@
     }
 
     setBusy(false);
-    operationSummary.textContent = getResultSummary(payload);
+    activeSummary.textContent = getResultSummary(payload);
     renderDetails(payload);
   }
 
+  function setResultTargetForOperation(operation) {
+    if (operation === 'prime-variables') {
+      setActiveResult(primeResultPanel, primeSummary, primeDetails);
+      return;
+    }
+
+    if (operation === 'scan-unsupported-variants' || operation === 'apply-unsupported-variants') {
+      setActiveResult(variantsResultPanel, variantsSummary, variantsDetails);
+      return;
+    }
+
+    if (operation === 'scan-missing-instances' || operation === 'apply-missing-instances') {
+      setActiveResult(instancesResultPanel, instancesSummary, instancesDetails);
+    }
+  }
+
   function renderDetails(payload) {
-    operationDetails.innerHTML = '';
+    activeDetails.innerHTML = '';
 
     if (payload.operation !== 'scan-missing-instances') {
       return;
@@ -411,8 +443,8 @@
 
     const heading = document.createElement('div');
     heading.className = 'detail-meta';
-    heading.textContent = `Blocked details (${blockedPlans.length})`;
-    operationDetails.appendChild(heading);
+    heading.textContent = `Needs review (${blockedPlans.length})`;
+    activeDetails.appendChild(heading);
 
     for (const plan of blockedPlans.slice(0, 20)) {
       const item = document.createElement('div');
@@ -427,28 +459,36 @@
       meta.textContent = [
         `Page: ${plan.pageName || 'Unknown'}`,
         `Parent: ${plan.parentName || 'Unknown'}`,
-        `Source: ${plan.sourceComponentName || 'Unknown'}`,
-        `Color: ${plan.removedColor || 'unknown'}`,
-        `Target: ${formatTargetPropertyValues(plan.targetPropertyValues)}`,
-        `Candidates: ${typeof plan.targetCandidateCount === 'number' ? plan.targetCandidateCount : 'unknown'}`,
-        `Reason: ${plan.reason || 'Unknown'}`,
+        `Old variant: ${plan.sourceComponentName || 'Unknown'}`,
+        `Old color: ${formatOptionalValue(plan.removedColor)}`,
+        `Expected variant: ${formatTargetPropertyValues(plan.targetPropertyValues)}`,
+        `Possible matches: ${typeof plan.targetCandidateCount === 'number' ? plan.targetCandidateCount : 'Unknown'}`,
+        `Why: ${plan.reason || 'Unknown'}`,
       ].join(' | ');
 
       item.append(title, meta);
-      operationDetails.appendChild(item);
+      activeDetails.appendChild(item);
     }
 
     if (blockedPlans.length > 20) {
       const more = document.createElement('div');
       more.className = 'detail-meta';
-      more.textContent = `${blockedPlans.length - 20} more blocked instances not shown.`;
-      operationDetails.appendChild(more);
+      more.textContent = `${blockedPlans.length - 20} more instances need review but are not shown.`;
+      activeDetails.appendChild(more);
     }
+  }
+
+  function formatOptionalValue(value) {
+    if (!value || value === 'unknown') {
+      return 'Unknown';
+    }
+
+    return value;
   }
 
   function formatTargetPropertyValues(targetPropertyValues) {
     if (!targetPropertyValues) {
-      return 'none';
+      return 'None';
     }
 
     return Object.keys(targetPropertyValues)
@@ -472,20 +512,23 @@
     const details = payload.details || {};
 
     if (payload.operation === 'prime-variables') {
-      return `Renamed ${details.renamedVariableCount || 0} variables.`;
+      return `Updated ${details.renamedVariableCount || 0} variables.`;
     }
 
     if (payload.operation === 'scan-unsupported-variants') {
-      return `Scanned ${details.scannedComponentSetCount || 0} component sets — ${details.removeCount || 0} to remove, ${details.renameCount || 0} to rename, ${details.colorModeMigrationCount || details.alertMigrationCount || 0} to migrate.`;
+      const changeCount = (details.removeCount || 0) + (details.renameCount || 0) + (details.colorModeMigrationCount || details.alertMigrationCount || 0);
+      return `Scanned ${details.scannedComponentSetCount || 0} component sets. Found ${changeCount} change${changeCount === 1 ? '' : 's'} to apply.`;
     }
 
     if (payload.operation === 'apply-unsupported-variants') {
       const colorModeMigration = details.colorModeMigration || details.alertMigration || {};
       const failedPaintWriteCount = colorModeMigration.failedPaintWriteCount || 0;
+      const appliedCount = (details.removedCount || 0) + (details.renamedCount || 0) + (colorModeMigration.migratedPaintCount || 0);
+      const failedCount = (details.failedCount || 0) + failedPaintWriteCount;
       const paintWriteSuffix = failedPaintWriteCount > 0
-        ? ` ${failedPaintWriteCount} paint write${failedPaintWriteCount === 1 ? '' : 's'} could not be applied (see plugin console).`
+        ? ` Could not update ${failedPaintWriteCount} color binding${failedPaintWriteCount === 1 ? '' : 's'} inside nested instances.`
         : '';
-      return `Removed ${details.removedCount || 0} variants, renamed ${details.renamedCount || 0}, migrated ${colorModeMigration.migratedPaintCount || 0} color-mode paints, failed ${details.failedCount || 0}.${paintWriteSuffix}`;
+      return `Applied ${appliedCount} change${appliedCount === 1 ? '' : 's'}. ${failedCount} change${failedCount === 1 ? '' : 's'} failed.${paintWriteSuffix}`;
     }
 
     if (payload.operation === 'load-color-modes') {
@@ -493,11 +536,11 @@
     }
 
     if (payload.operation === 'scan-missing-instances') {
-      return `Scanned ${details.scannedInstanceCount || 0} instances — ${details.readyCount || 0} ready to fix, ${details.blockedCount || 0} could not be resolved.`;
+      return `Scanned ${details.scannedInstanceCount || 0} instances. ${details.readyCount || 0} can be updated, and ${details.blockedCount || 0} need review.`;
     }
 
     if (payload.operation === 'apply-missing-instances') {
-      return `Fixed ${details.fixedCount || 0} missing instances, skipped mode on ${details.skippedModeCount || 0}, failed ${details.failedCount || 0}.`;
+      return `Updated ${details.fixedCount || 0} instances. Left color mode unchanged for ${details.skippedModeCount || 0}. ${details.failedCount || 0} update${details.failedCount === 1 ? '' : 's'} failed.`;
     }
 
     return payload.message;
@@ -508,24 +551,24 @@
   }
 
   primeButton.onclick = () => {
-    startOperation('Priming variables...');
+    startOperation('Preparing variables...', primeResultPanel, primeSummary, primeDetails);
     send('prime-variables');
   };
 
   scanVariantsButton.onclick = () => {
     resetVariantButtons();
-    startOperation('Scanning variants...');
+    startOperation('Scanning variants...', variantsResultPanel, variantsSummary, variantsDetails);
     send('scan-unsupported-variants');
   };
 
   applyVariantsButton.onclick = () => {
-    startOperation('Applying cleanup...');
+    startOperation('Removing and updating variants...', variantsResultPanel, variantsSummary, variantsDetails);
     send('apply-unsupported-variants');
   };
 
   scanMissingButton.onclick = () => {
     resetMissingButtons();
-    startOperation('Scanning instances...');
+    startOperation('Scanning instances...', instancesResultPanel, instancesSummary, instancesDetails);
     send({
       type: 'scan-missing-instances',
       scope: fixScopeSelect.value,
@@ -534,7 +577,7 @@
   };
 
   applyMissingButton.onclick = () => {
-    startOperation('Fixing instances...');
+    startOperation('Updating instances...', instancesResultPanel, instancesSummary, instancesDetails);
     send('apply-missing-instances');
   };
 

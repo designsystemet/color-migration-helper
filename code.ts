@@ -310,6 +310,18 @@ function findTargetMode(collection: VariableCollection, removedColor: string, su
   return findModeByName(collection, DEFAULT_COLOR_MODE_NAME) || collection.modes[0] || null;
 }
 
+function getScopeLoadingMessage(scope: FixScope) {
+  if (scope === 'selection') {
+    return 'Loading selection...';
+  }
+
+  if (scope === 'page') {
+    return 'Loading page...';
+  }
+
+  return 'Loading file...';
+}
+
 function collectDescendantsIncludingInstances(root: SceneNode): SceneNode[] {
   const nodes: SceneNode[] = [];
   const visit = (node: SceneNode) => {
@@ -428,7 +440,7 @@ async function primeVariables(): Promise<OperationResultPayload> {
 
   postOperationProgress({
     operation,
-    message: 'Reading local variable collections...',
+    message: 'Reading variables...',
   });
 
   const collections = await figma.variables.getLocalVariableCollectionsAsync();
@@ -440,7 +452,7 @@ async function primeVariables(): Promise<OperationResultPayload> {
       createdAt: new Date().toISOString(),
       operation,
       status: 'error',
-      message: `Found ${mainColorCollections.length} "${sourceCollectionName}" collections. Rename manually before priming.`,
+      message: `Found ${mainColorCollections.length} "${sourceCollectionName}" collections. Keep only one before preparing variables.`,
       details: {
         matchingCollections: mainColorCollections.map((collection) => ({
           id: collection.id,
@@ -456,7 +468,7 @@ async function primeVariables(): Promise<OperationResultPayload> {
       createdAt: new Date().toISOString(),
       operation,
       status: 'error',
-      message: `Both "${sourceCollectionName}" and "${targetCollectionName}" exist. Skipping to avoid changing the wrong collection.`,
+      message: `Both "${sourceCollectionName}" and "${targetCollectionName}" exist. Keep only the collection you want to update, then try again.`,
       details: {
         mainColorCollection: {
           id: mainColorCollections[0].id,
@@ -478,7 +490,7 @@ async function primeVariables(): Promise<OperationResultPayload> {
       createdAt: new Date().toISOString(),
       operation,
       status: 'noop',
-      message: `No "${sourceCollectionName}" or "${targetCollectionName}" collection found.`,
+      message: `Could not find a "${sourceCollectionName}" or "${targetCollectionName}" collection.`,
       details: {
         searchedCollectionNames: [sourceCollectionName, targetCollectionName],
       },
@@ -507,7 +519,7 @@ async function primeVariables(): Promise<OperationResultPayload> {
     if (!variable) {
       skippedVariables.push({
         id: variableId,
-        reason: 'Variable not found',
+        reason: 'Could not find this variable.',
       });
       continue;
     }
@@ -527,7 +539,7 @@ async function primeVariables(): Promise<OperationResultPayload> {
     if ((index + 1) % 10 === 0 || index + 1 === total) {
       postOperationProgress({
         operation,
-        message: 'Renaming variables...',
+        message: 'Preparing variables...',
         processed: index + 1,
         total,
       });
@@ -547,7 +559,7 @@ async function primeVariables(): Promise<OperationResultPayload> {
     status: changed ? 'success' : 'noop',
     message: changed
       ? `Primed variables: renamed ${renamedVariables.length} variable${renamedVariables.length === 1 ? '' : 's'}.`
-      : `Already primed. No "${variablePrefix}" variable names found in "${targetCollection.name}".`,
+      : `Variables are already prepared. No names starting with "${variablePrefix}" were found in "${targetCollection.name}".`,
     details: {
       collection: {
         id: targetCollection.id,
@@ -692,7 +704,7 @@ async function loadColorModes(): Promise<OperationResultPayload> {
       createdAt: new Date().toISOString(),
       operation,
       status: 'error',
-      message: 'No Color or Main color collection found.',
+      message: 'Could not find a Color or Main color collection.',
       details: {
         collectionNames: COLOR_COLLECTION_NAMES,
       },
@@ -722,14 +734,14 @@ async function scanUnsupportedVariants(): Promise<OperationResultPayload> {
   pendingUnsupportedVariantPlans = [];
   postOperationProgress({
     operation,
-    message: 'Loading pages...',
+    message: 'Loading file...',
   });
 
   const componentSets = await getAllComponentSets();
 
   postOperationProgress({
     operation,
-    message: 'Scanning component sets...',
+    message: 'Scanning variants...',
     processed: 0,
     total: componentSets.length,
   });
@@ -812,7 +824,7 @@ async function scanUnsupportedVariants(): Promise<OperationResultPayload> {
     if ((index + 1) % 10 === 0 || index + 1 === componentSets.length) {
       postOperationProgress({
         operation,
-        message: 'Scanning component sets...',
+        message: 'Scanning variants...',
         processed: index + 1,
         total: componentSets.length,
       });
@@ -832,7 +844,7 @@ async function scanUnsupportedVariants(): Promise<OperationResultPayload> {
       createdAt: new Date().toISOString(),
       operation,
       status: 'noop',
-      message: 'No unsupported color variants found.',
+      message: 'No old color variants found.',
       details: {
         scannedComponentSetCount: componentSets.length,
         skippedComponentSets,
@@ -873,7 +885,7 @@ async function applyUnsupportedVariantPlans(): Promise<OperationResultPayload> {
       createdAt: new Date().toISOString(),
       operation,
       status: 'noop',
-      message: 'No pending unsupported variant scan. Run scan first.',
+      message: 'Scan variants before applying changes.',
       details: {},
     };
   }
@@ -886,7 +898,7 @@ async function applyUnsupportedVariantPlans(): Promise<OperationResultPayload> {
 
   postOperationProgress({
     operation,
-    message: 'Applying unsupported variant cleanup...',
+    message: 'Removing and updating variants...',
     processed,
     total: totalSteps,
   });
@@ -914,7 +926,7 @@ async function applyUnsupportedVariantPlans(): Promise<OperationResultPayload> {
           id: variant.id,
           name: variant.from,
           action: 'rename',
-          reason: 'Component no longer exists.',
+          reason: 'Could not find this component.',
         });
       } else {
         result.name = variant.to;
@@ -931,7 +943,7 @@ async function applyUnsupportedVariantPlans(): Promise<OperationResultPayload> {
 
     postOperationProgress({
       operation,
-      message: 'Applying unsupported variant cleanup...',
+      message: 'Removing and updating variants...',
       processed,
       total: totalSteps,
     });
@@ -958,7 +970,7 @@ async function applyUnsupportedVariantPlans(): Promise<OperationResultPayload> {
           name: variant.name,
           color: variant.color,
           action: 'remove',
-          reason: 'Component no longer exists.',
+          reason: 'Could not find this component.',
         });
       } else {
         result.remove();
@@ -975,7 +987,7 @@ async function applyUnsupportedVariantPlans(): Promise<OperationResultPayload> {
 
     postOperationProgress({
       operation,
-      message: 'Applying unsupported variant cleanup...',
+      message: 'Removing and updating variants...',
       processed,
       total: totalSteps,
     });
@@ -1168,7 +1180,7 @@ async function applyColorModeMigration(): Promise<JsonValue> {
       migratedComponentSetCount: 0,
       migratedVariantCount: 0,
       migratedPaintCount: 0,
-      skipped: [{ reason: 'No Color or Main color collection found.' }],
+      skipped: [{ reason: 'Could not find a Color or Main color collection.' }],
     };
   }
 
@@ -1232,7 +1244,7 @@ function findTargetComponent(componentSets: ComponentSetNode[], componentSetName
   if (!componentSet) {
     return {
       component: null,
-      reason: `component set "${componentSetName}" could not be found`,
+      reason: `Could not find the "${componentSetName}" component set.`,
       candidateCount: 0,
       candidateNames: [],
       targetPropertyValues: null,
@@ -1243,7 +1255,7 @@ function findTargetComponent(componentSets: ComponentSetNode[], componentSetName
   if (!targetPropertyValues && componentSet.children.length !== 1) {
     return {
       component: null,
-      reason: `could not map tokens "${tokens.join(', ')}" to current variant properties`,
+      reason: `Could not match the old variant name to the current variant properties.`,
       candidateCount: 0,
       candidateNames: [],
       targetPropertyValues,
@@ -1284,8 +1296,8 @@ function findTargetComponent(componentSets: ComponentSetNode[], componentSetName
     component: null,
     reason:
       candidates.length === 0
-        ? `no target variants matched ${formatTargetValues(targetPropertyValues)}`
-        : `${candidates.length} target variants matched ${formatTargetValues(targetPropertyValues)}`,
+        ? `Could not find a current variant matching ${formatTargetValues(targetPropertyValues)}.`
+        : `Found ${candidates.length} possible current variants matching ${formatTargetValues(targetPropertyValues)}.`,
     candidateCount: candidates.length,
     candidateNames: candidates.slice(0, 10).map((candidate) => candidate.name),
     targetPropertyValues,
@@ -1300,15 +1312,15 @@ function getBlockedReason(
   const reasons: string[] = [];
 
   if (!removedColor) {
-    reasons.push('old color could not be parsed from source component name');
+    reasons.push('Could not read the old color from the variant name.');
   }
 
   if (!targetMode) {
-    reasons.push('target mode could not be resolved');
+    reasons.push('Could not find a color mode to apply.');
   }
 
   if (!targetComponentResult?.component) {
-    reasons.push(targetComponentResult?.reason || 'target variant could not be matched');
+    reasons.push(targetComponentResult?.reason || 'Could not find a matching current variant.');
   }
 
   return reasons.length > 0 ? reasons.join('; ') : undefined;
@@ -1331,7 +1343,7 @@ async function scanMissingInstances(scope: FixScope, supportModeId: string | nul
       createdAt: new Date().toISOString(),
       operation,
       status: 'error',
-      message: 'No Color or Main color collection found.',
+      message: 'Could not find a Color or Main color collection.',
       details: {
         collectionNames: COLOR_COLLECTION_NAMES,
       },
@@ -1340,7 +1352,7 @@ async function scanMissingInstances(scope: FixScope, supportModeId: string | nul
 
   postOperationProgress({
     operation,
-    message: 'Loading scope...',
+    message: getScopeLoadingMessage(scope),
   });
 
   const instances = await getInstancesForScope(scope);
@@ -1387,7 +1399,7 @@ async function scanMissingInstances(scope: FixScope, supportModeId: string | nul
     if ((index + 1) % 10 === 0 || index + 1 === instances.length) {
       postOperationProgress({
         operation,
-        message: 'Scanning missing instances...',
+        message: 'Scanning instances...',
         processed: index + 1,
         total: instances.length,
       });
@@ -1464,7 +1476,7 @@ async function applyMissingInstancePlans(): Promise<OperationResultPayload> {
       createdAt: new Date().toISOString(),
       operation,
       status: 'error',
-      message: 'No Color or Main color collection found.',
+      message: 'Could not find a Color or Main color collection.',
       details: {
         collectionNames: COLOR_COLLECTION_NAMES,
       },
@@ -1477,7 +1489,7 @@ async function applyMissingInstancePlans(): Promise<OperationResultPayload> {
       createdAt: new Date().toISOString(),
       operation,
       status: 'noop',
-      message: 'No ready missing instance fixes. Run scan first.',
+      message: 'Scan instances before applying changes.',
       details: {},
     };
   }
@@ -1522,16 +1534,16 @@ async function applyMissingInstancePlans(): Promise<OperationResultPayload> {
         }
 
         if (instance?.type !== 'INSTANCE') {
-          throw new Error('Instance no longer exists.');
+          throw new Error('Could not find this instance.');
         }
 
         if (targetComponent?.type !== 'COMPONENT') {
-          throw new Error('Target component no longer exists.');
+          throw new Error('Could not find the component to swap to.');
         }
 
         const modeId = plan.targetModeId;
         if (!modeId) {
-          throw new Error('Missing target mode.');
+          throw new Error('Could not find the color mode to apply.');
         }
 
         instance.swapComponent(targetComponent);
@@ -1549,7 +1561,7 @@ async function applyMissingInstancePlans(): Promise<OperationResultPayload> {
           targetComponentName: plan.targetComponentName,
           targetModeName: shouldSkipMode ? null : plan.targetModeName,
           skippedMode: shouldSkipMode,
-          skippedModeReason: shouldSkipMode ? 'Skipped neutral mode inside TableColumn.' : null,
+          skippedModeReason: shouldSkipMode ? 'Left color mode unchanged for a TableColumn subcomponent.' : null,
         });
       } catch (mutationError: unknown) {
         failed.push({
@@ -1564,7 +1576,7 @@ async function applyMissingInstancePlans(): Promise<OperationResultPayload> {
 
     postOperationProgress({
       operation,
-      message: 'Fixing missing instances...',
+      message: 'Updating instances...',
       processed,
       total: plans.length,
     });
