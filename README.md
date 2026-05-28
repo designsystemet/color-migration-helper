@@ -24,6 +24,7 @@ The plugin has three main steps:
    - Swaps ready instances to the matching current component.
    - Sets the correct color mode on the fixed instance.
    - Lets the user choose which Color mode should replace the old `support` category.
+   - Skips setting explicit `neutral` mode for nested missing instances inside `TableColumn`, because those subcomponents were wired to neutral by mistake and should inherit/default instead.
 
 ## Temporary Reporting
 

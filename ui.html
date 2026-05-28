@@ -646,7 +646,7 @@
     }
 
     if (payload.operation === 'apply-missing-instances') {
-      return `Fixed ${details.fixedCount || 0} missing instances, failed ${details.failedCount || 0}.`;
+      return `Fixed ${details.fixedCount || 0} missing instances, skipped mode on ${details.skippedModeCount || 0}, failed ${details.failedCount || 0}.`;
     }
 
     return payload.message;

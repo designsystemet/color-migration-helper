@@ -113,6 +113,7 @@ const COLOR_VARIANT_PROPERTY_NAMES = ['color', 'color mode'];
 // variables to Color variables and use modes for info/warning/danger/success.
 const COLOR_MODE_MIGRATION_COMPONENT_SET_NAMES = ['Alert', 'ValidationMessage'];
 const SEMANTIC_COLOR_GROUPS = ['info', 'warning', 'danger', 'success'];
+const SKIP_MISSING_INSTANCE_MODE_CONTEXTS = ['TableColumn'];
 
 let pendingUnsupportedVariantPlans: ComponentSetRemovalPlan[] = [];
 let pendingColorModeMigrationComponentSetIds: string[] = [];
@@ -369,6 +370,16 @@ function getComponentContext(node: BaseNode): {
   }
 
   return null;
+}
+
+function shouldSkipModeForMissingInstance(plan: MissingInstancePlan) {
+  const contextName = plan.componentContextSetName || plan.componentContextName || '';
+  const isSkippedContext = SKIP_MISSING_INSTANCE_MODE_CONTEXTS.some((name) => normalizeToken(name) === normalizeToken(contextName));
+
+  // TableColumn has nested cell/header instances that were incorrectly wired to
+  // neutral variants but visually overridden to look like main. Swapping is OK,
+  // but setting explicit neutral mode would preserve the original wiring bug.
+  return isSkippedContext && normalizeToken(plan.removedColor) === 'neutral';
 }
 
 function buildVariantNameWithoutColor(node: ComponentNode): string | null {
@@ -1525,6 +1536,7 @@ async function applyMissingInstancePlans(): Promise<OperationResultPayload> {
 
   const fixed: JsonValue[] = [];
   const failed: JsonValue[] = [];
+  let skippedModeCount = 0;
 
   for (let index = 0; index < plans.length; index += 1) {
     const plan = plans[index];
@@ -1547,14 +1559,21 @@ async function applyMissingInstancePlans(): Promise<OperationResultPayload> {
       }
 
       instance.swapComponent(targetComponent);
-      const setExplicitVariableModeForCollection = instance.setExplicitVariableModeForCollection.bind(instance);
-      setExplicitVariableModeForCollection(colorCollection, modeId);
+      const shouldSkipMode = shouldSkipModeForMissingInstance(plan);
+      if (shouldSkipMode) {
+        skippedModeCount += 1;
+      } else {
+        const setExplicitVariableModeForCollection = instance.setExplicitVariableModeForCollection.bind(instance);
+        setExplicitVariableModeForCollection(colorCollection, modeId);
+      }
 
       fixed.push({
         instanceId: plan.instanceId,
         instanceName: plan.instanceName,
         targetComponentName: plan.targetComponentName,
-        targetModeName: plan.targetModeName,
+        targetModeName: shouldSkipMode ? null : plan.targetModeName,
+        skippedMode: shouldSkipMode,
+        skippedModeReason: shouldSkipMode ? 'Skipped neutral mode inside TableColumn.' : null,
       });
     } catch (error) {
       failed.push({
@@ -1582,6 +1601,7 @@ async function applyMissingInstancePlans(): Promise<OperationResultPayload> {
     details: {
       fixedCount: fixed.length,
       failedCount: failed.length,
+      skippedModeCount,
       fixed,
       failed,
     },
