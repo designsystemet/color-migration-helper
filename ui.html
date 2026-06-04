@@ -28,7 +28,7 @@
 
   .segmented {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(4, 1fr);
     gap: 2px;
     border: 1px solid var(--figma-color-border, #d9d9d9);
     border-radius: 6px;
@@ -200,6 +200,7 @@
       transform: rotate(360deg);
     }
   }
+
 </style>
 
 <div class="app">
@@ -207,7 +208,8 @@
     <div class="segmented" role="tablist">
       <button class="segment active" data-step="prime" role="tab" aria-selected="true" aria-controls="step-prime" id="tab-prime">1. Prepare</button>
       <button class="segment" data-step="variants" role="tab" aria-selected="false" aria-controls="step-variants" id="tab-variants">2. Remove variants</button>
-      <button class="segment" data-step="instances" role="tab" aria-selected="false" aria-controls="step-instances" id="tab-instances">3. Update instances</button>
+      <button class="segment" data-step="instances" role="tab" aria-selected="false" aria-controls="step-instances" id="tab-instances">3. Fix in library</button>
+      <button class="segment" data-step="library" role="tab" aria-selected="false" aria-controls="step-library" id="tab-library">4. Update sketches</button>
     </div>
 
     <section class="step active" id="step-prime" role="tabpanel" aria-labelledby="tab-prime" tabindex="0">
@@ -274,6 +276,41 @@
         </div>
       </section>
     </section>
+
+    <section class="step" id="step-library" role="tabpanel" aria-labelledby="tab-library" tabindex="0">
+      <section class="panel">
+        <div class="panel-title">Update sketches that use this library</div>
+        <p>Find instances stuck on the pre-migration library version and update them to the current one. Run this in your sketch file after updating the library.</p>
+        <div class="control-row stacked" style="margin-top: 10px;">
+          <label>
+            Scope
+            <select id="libraryFixScope">
+              <option value="selection">Selection</option>
+              <option value="page">Current page</option>
+              <option value="file">Whole file</option>
+            </select>
+          </label>
+        </div>
+        <div class="toolbar" style="margin-top: 10px;">
+          <button class="primary" id="scanLibrary">Scan instances</button>
+        </div>
+      </section>
+      <section class="panel is-hidden" id="libraryResultPanel">
+        <div class="panel-title">Library scan result</div>
+        <div class="summary-line" id="librarySummary"></div>
+        <div class="details-list" id="libraryDetails"></div>
+        <div class="control-row stacked is-hidden" id="librarySupportChoiceRow" style="margin-top: 10px;">
+          <label>
+            Replace 'support' with
+            <select id="librarySupportMode"></select>
+          </label>
+        </div>
+        <div class="toolbar" style="margin-top: 10px;">
+          <button class="primary" id="applyLibrary" disabled>Update instances</button>
+        </div>
+      </section>
+    </section>
+
   </main>
 
   <div class="busy-overlay" id="busyOverlay">
@@ -303,6 +340,14 @@
   const instancesResultPanel = document.getElementById('instancesResultPanel');
   const instancesSummary = document.getElementById('instancesSummary');
   const instancesDetails = document.getElementById('instancesDetails');
+  const libraryFixScopeSelect = document.getElementById('libraryFixScope');
+  const scanLibraryButton = document.getElementById('scanLibrary');
+  const applyLibraryButton = document.getElementById('applyLibrary');
+  const libraryResultPanel = document.getElementById('libraryResultPanel');
+  const librarySummary = document.getElementById('librarySummary');
+  const libraryDetails = document.getElementById('libraryDetails');
+  const librarySupportChoiceRow = document.getElementById('librarySupportChoiceRow');
+  const librarySupportModeSelect = document.getElementById('librarySupportMode');
   const busyOverlay = document.getElementById('busyOverlay');
   const busyText = document.getElementById('busyText');
   let activeSummary = primeSummary;
@@ -332,6 +377,9 @@
     supportModeSelect.disabled = isBusy;
     scanMissingButton.disabled = isBusy;
     applyMissingButton.disabled = isBusy || !applyMissingButton.dataset.ready;
+    libraryFixScopeSelect.disabled = isBusy;
+    scanLibraryButton.disabled = isBusy;
+    applyLibraryButton.disabled = isBusy || !applyLibraryButton.dataset.ready;
     busyOverlay.classList.toggle('active', isBusy);
     if (message) {
       busyText.textContent = message;
@@ -352,7 +400,7 @@
   }
 
   function activateVariantApply(details) {
-    const total = (details.removeCount || 0) + (details.renameCount || 0) + (details.colorModeMigrationCount || details.alertMigrationCount || 0);
+    const total = (details.removeCount || 0) + (details.renameCount || 0) + (details.colorModeMigrationCount || 0);
     applyVariantsButton.textContent = total > 0 ? `Remove and update variants (${total})` : 'Remove and update variants';
     applyVariantsButton.dataset.ready = total > 0 ? 'true' : '';
     applyVariantsButton.disabled = total === 0;
@@ -379,6 +427,44 @@
     applyMissingButton.disabled = true;
   }
 
+  function activateLibraryApply(details) {
+    const ready = details.readyCount || 0;
+    const review = details.reviewCount || 0;
+    const total = ready + review;
+    let label = 'Update instances';
+    if (total > 0) {
+      label = `Update ${total} instance${total === 1 ? '' : 's'}`;
+      if (review > 0) {
+        label += ` (${review} need${review === 1 ? 's' : ''} review)`;
+      }
+    }
+    applyLibraryButton.textContent = label;
+    applyLibraryButton.dataset.ready = total > 0 ? 'true' : '';
+    applyLibraryButton.disabled = total === 0;
+
+    const supportFallbackCount = details.supportFallbackCount || 0;
+    const availableModes = Array.isArray(details.availableColorModes) ? details.availableColorModes : [];
+    if (supportFallbackCount > 0 && availableModes.length > 0) {
+      librarySupportModeSelect.innerHTML = '';
+      for (const mode of availableModes) {
+        const option = document.createElement('option');
+        option.value = mode.modeId;
+        option.textContent = mode.name;
+        librarySupportModeSelect.appendChild(option);
+      }
+      librarySupportChoiceRow.classList.remove('is-hidden');
+    } else {
+      librarySupportChoiceRow.classList.add('is-hidden');
+    }
+  }
+
+  function resetLibraryButtons() {
+    applyLibraryButton.textContent = 'Update instances';
+    applyLibraryButton.dataset.ready = '';
+    applyLibraryButton.disabled = true;
+    librarySupportChoiceRow.classList.add('is-hidden');
+  }
+
   function renderOperationProgress(payload) {
     const progress = typeof payload.processed === 'number' && typeof payload.total === 'number'
       ? ` (${payload.processed}/${payload.total})`
@@ -401,10 +487,14 @@
       activateVariantApply(payload.details || {});
     } else if (payload.operation === 'scan-missing-instances' && payload.status === 'preview') {
       activateMissingApply(payload.details || {});
+    } else if (payload.operation === 'scan-library-stuck-instances' && payload.status === 'preview') {
+      activateLibraryApply(payload.details || {});
     } else if (payload.operation === 'apply-unsupported-variants') {
       resetVariantButtons();
     } else if (payload.operation === 'apply-missing-instances') {
       resetMissingButtons();
+    } else if (payload.operation === 'apply-library-stuck-instances') {
+      resetLibraryButtons();
     }
 
     setBusy(false);
@@ -425,16 +515,85 @@
 
     if (operation === 'scan-missing-instances' || operation === 'apply-missing-instances') {
       setActiveResult(instancesResultPanel, instancesSummary, instancesDetails);
+      return;
+    }
+
+    if (operation === 'scan-library-stuck-instances' || operation === 'apply-library-stuck-instances') {
+      setActiveResult(libraryResultPanel, librarySummary, libraryDetails);
     }
   }
 
   function renderDetails(payload) {
     activeDetails.innerHTML = '';
 
-    if (payload.operation !== 'scan-missing-instances') {
+    if (payload.operation === 'scan-unsupported-variants') {
+      renderVariantsDetails(payload);
       return;
     }
 
+    if (payload.operation === 'scan-missing-instances') {
+      renderMissingDetails(payload);
+      return;
+    }
+
+    if (payload.operation === 'scan-library-stuck-instances') {
+      renderLibraryDetails(payload);
+    }
+  }
+
+  function renderVariantsDetails(payload) {
+    const plans = payload.details && Array.isArray(payload.details.plans) ? payload.details.plans : [];
+    const skipped = [];
+    for (const plan of plans) {
+      if (!plan || !Array.isArray(plan.skippedRenames)) continue;
+      for (const item of plan.skippedRenames) {
+        skipped.push({
+          componentSetName: plan.componentSetName,
+          pageName: plan.pageName,
+          variantName: item.name,
+          reason: item.reason,
+        });
+      }
+    }
+
+    if (skipped.length === 0) {
+      return;
+    }
+
+    const heading = document.createElement('div');
+    heading.className = 'detail-meta';
+    heading.textContent = `Skipped renames (${skipped.length})`;
+    activeDetails.appendChild(heading);
+
+    for (const item of skipped.slice(0, 20)) {
+      const detail = document.createElement('div');
+      detail.className = 'detail-item';
+
+      const title = document.createElement('div');
+      title.className = 'detail-title';
+      title.textContent = item.variantName || 'Unnamed variant';
+
+      const meta = document.createElement('div');
+      meta.className = 'detail-meta';
+      meta.textContent = [
+        `Component set: ${item.componentSetName || 'Unknown'}`,
+        `Page: ${item.pageName || 'Unknown'}`,
+        `Why: ${item.reason || 'Unknown'}`,
+      ].join(' | ');
+
+      detail.append(title, meta);
+      activeDetails.appendChild(detail);
+    }
+
+    if (skipped.length > 20) {
+      const more = document.createElement('div');
+      more.className = 'detail-meta';
+      more.textContent = `${skipped.length - 20} more skipped renames not shown.`;
+      activeDetails.appendChild(more);
+    }
+  }
+
+  function renderMissingDetails(payload) {
     const plans = payload.details && Array.isArray(payload.details.plans) ? payload.details.plans : [];
     const blockedPlans = plans.filter((plan) => plan.status === 'blocked');
     if (blockedPlans.length === 0) {
@@ -478,6 +637,51 @@
     }
   }
 
+  function renderLibraryDetails(payload) {
+    const plans = payload.details && Array.isArray(payload.details.plans) ? payload.details.plans : [];
+    const flagged = plans.filter((plan) => plan.status === 'blocked' || plan.status === 'review');
+    if (flagged.length === 0) {
+      return;
+    }
+
+    const heading = document.createElement('div');
+    heading.className = 'detail-meta';
+    heading.textContent = `Needs review (${flagged.length})`;
+    activeDetails.appendChild(heading);
+
+    for (const plan of flagged.slice(0, 20)) {
+      const item = document.createElement('div');
+      item.className = 'detail-item';
+
+      const title = document.createElement('div');
+      title.className = 'detail-title';
+      title.textContent = plan.instanceName || 'Unnamed instance';
+
+      const meta = document.createElement('div');
+      meta.className = 'detail-meta';
+      meta.textContent = [
+        `Status: ${plan.status}`,
+        `Page: ${plan.pageName || 'Unknown'}`,
+        `Parent: ${plan.parentName || 'Unknown'}`,
+        `Component: ${plan.oldComponentSetName || 'Unknown'}`,
+        `Old color: ${formatOptionalValue(plan.oldColorValue)}`,
+        `Legacy mode: ${plan.legacyModeCollectionName ? plan.legacyModeCollectionName + ' / ' + plan.legacyModeName : 'None'}`,
+        `Target mode: ${plan.targetModeName || 'Default'}`,
+        `Why: ${plan.reason || 'Unknown'}`,
+      ].join(' | ');
+
+      item.append(title, meta);
+      activeDetails.appendChild(item);
+    }
+
+    if (flagged.length > 20) {
+      const more = document.createElement('div');
+      more.className = 'detail-meta';
+      more.textContent = `${flagged.length - 20} more instances need review but are not shown.`;
+      activeDetails.appendChild(more);
+    }
+  }
+
   function formatOptionalValue(value) {
     if (!value || value === 'unknown') {
       return 'Unknown';
@@ -516,12 +720,12 @@
     }
 
     if (payload.operation === 'scan-unsupported-variants') {
-      const changeCount = (details.removeCount || 0) + (details.renameCount || 0) + (details.colorModeMigrationCount || details.alertMigrationCount || 0);
+      const changeCount = (details.removeCount || 0) + (details.renameCount || 0) + (details.colorModeMigrationCount || 0);
       return `Scanned ${details.scannedComponentSetCount || 0} component sets. Found ${changeCount} change${changeCount === 1 ? '' : 's'} to apply.`;
     }
 
     if (payload.operation === 'apply-unsupported-variants') {
-      const colorModeMigration = details.colorModeMigration || details.alertMigration || {};
+      const colorModeMigration = details.colorModeMigration || {};
       const failedPaintWriteCount = colorModeMigration.failedPaintWriteCount || 0;
       const appliedCount = (details.removedCount || 0) + (details.renamedCount || 0) + (colorModeMigration.migratedPaintCount || 0);
       const failedCount = (details.failedCount || 0) + failedPaintWriteCount;
@@ -541,6 +745,21 @@
 
     if (payload.operation === 'apply-missing-instances') {
       return `Updated ${details.fixedCount || 0} instances. Left color mode unchanged for ${details.skippedModeCount || 0}. ${details.failedCount || 0} update${details.failedCount === 1 ? '' : 's'} failed.`;
+    }
+
+    if (payload.operation === 'scan-library-stuck-instances') {
+      const ready = details.readyCount || 0;
+      const review = details.reviewCount || 0;
+      const blocked = details.blockedCount || 0;
+      const supportFallback = details.supportFallbackCount || 0;
+      const supportSuffix = supportFallback > 0
+        ? ` ${supportFallback} support instance${supportFallback === 1 ? '' : 's'} need a fallback mode — pick one below.`
+        : '';
+      return `Scanned ${details.scannedInstanceCount || 0} instances. ${ready} ready, ${review} need review, ${blocked} blocked.${supportSuffix}`;
+    }
+
+    if (payload.operation === 'apply-library-stuck-instances') {
+      return `Updated ${details.fixedCount || 0} instance${details.fixedCount === 1 ? '' : 's'}. ${details.failedCount || 0} update${details.failedCount === 1 ? '' : 's'} failed.`;
     }
 
     return payload.message;
@@ -579,6 +798,25 @@
   applyMissingButton.onclick = () => {
     startOperation('Updating instances...', instancesResultPanel, instancesSummary, instancesDetails);
     send('apply-missing-instances');
+  };
+
+  scanLibraryButton.onclick = () => {
+    resetLibraryButtons();
+    startOperation('Scanning library instances...', libraryResultPanel, librarySummary, libraryDetails);
+    send({
+      type: 'scan-library-stuck-instances',
+      scope: libraryFixScopeSelect.value,
+    });
+  };
+
+  applyLibraryButton.onclick = () => {
+    const supportFallbackVisible = !librarySupportChoiceRow.classList.contains('is-hidden');
+    const supportFallbackModeId = supportFallbackVisible ? (librarySupportModeSelect.value || null) : null;
+    startOperation('Updating library instances...', libraryResultPanel, librarySummary, libraryDetails);
+    send({
+      type: 'apply-library-stuck-instances',
+      supportFallbackModeId,
+    });
   };
 
   window.onmessage = (event) => {

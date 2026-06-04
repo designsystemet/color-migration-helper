@@ -4,7 +4,9 @@ type Operation =
   | 'apply-unsupported-variants'
   | 'load-color-modes'
   | 'scan-missing-instances'
-  | 'apply-missing-instances';
+  | 'apply-missing-instances'
+  | 'scan-library-stuck-instances'
+  | 'apply-library-stuck-instances';
 
 type FixScope = 'selection' | 'page' | 'file';
 
@@ -14,7 +16,9 @@ type PluginMessage =
   | { type: 'apply-unsupported-variants' }
   | { type: 'load-color-modes' }
   | { type: 'scan-missing-instances'; scope: FixScope; supportModeId: string | null }
-  | { type: 'apply-missing-instances' };
+  | { type: 'apply-missing-instances' }
+  | { type: 'scan-library-stuck-instances'; scope: FixScope }
+  | { type: 'apply-library-stuck-instances'; supportFallbackModeId: string | null };
 
 type UiMessage =
   | { type: 'operation-progress'; payload: OperationProgressPayload }
@@ -72,6 +76,27 @@ type ComponentSetRemovalPlan = {
   }>;
 };
 
+type LibraryStuckInstancePlan = {
+  instanceId: string;
+  instanceName: string;
+  parentName: string | null;
+  pageName: string | null;
+  oldColorValue: string;
+  oldComponentSetKey: string;
+  oldComponentSetName: string;
+  legacyModeCollectionId: string | null;
+  legacyModeCollectionName: string | null;
+  legacyModeName: string | null;
+  targetColorCollectionId: string | null;
+  targetModeId: string | null;
+  targetModeName: string | null;
+  targetComponentId: string | null;
+  targetComponentName: string | null;
+  needsSupportModeChoice: boolean;
+  status: 'ready' | 'blocked' | 'review';
+  reason?: string;
+};
+
 type MissingInstancePlan = {
   instanceId: string;
   instanceName: string;
@@ -105,6 +130,10 @@ const UNSUPPORTED_COLORS: UnsupportedColor[] = [
 ];
 
 const COLOR_COLLECTION_NAMES = ['Color', 'Main color'];
+// Pre-migration the library exposed separate collections for each color group.
+// Sketch files may still have explicit mode overrides referencing these.
+const LEGACY_COLOR_COLLECTION_NAMES = ['Main color', 'Support color'];
+const NEUTRAL_MODE_NAME = 'neutral';
 const DEFAULT_COLOR_MODE_NAME = 'accent';
 // Older components used both "color" and "color mode" as the variant property
 // that selected neutral/support/etc. Treat both as the same migration axis.
@@ -118,6 +147,7 @@ const SKIP_MISSING_INSTANCE_MODE_CONTEXTS = ['TableColumn'];
 let pendingUnsupportedVariantPlans: ComponentSetRemovalPlan[] = [];
 let pendingColorModeMigrationComponentSetIds: string[] = [];
 let pendingMissingInstancePlans: MissingInstancePlan[] = [];
+let pendingLibraryStuckInstancePlans: LibraryStuckInstancePlan[] = [];
 
 figma.showUI(__html__, { width: 480, height: 460, themeColors: true });
 
@@ -193,6 +223,10 @@ function shouldTraverseChildren(node: PageNode | SceneNode) {
   // loader to synchronize the full descendant tree of every instance, which
   // is the dominant cost in large files. Nested instances are component
   // overrides anyway and cannot be acted on independently.
+  //
+  // Consequence: callers must always start walks from page-level scene
+  // nodes (page children). Starting inside an instance will appear to
+  // return nothing because we never recurse through its body.
   return node.type !== 'INSTANCE' && isChildrenMixin(node);
 }
 
@@ -848,7 +882,6 @@ async function scanUnsupportedVariants(): Promise<OperationResultPayload> {
       details: {
         scannedComponentSetCount: componentSets.length,
         skippedComponentSets,
-        alertMigrationCount: colorModeMigrationCount,
         colorModeMigrationCount,
         unsupportedColors: UNSUPPORTED_COLORS,
         plans,
@@ -865,7 +898,6 @@ async function scanUnsupportedVariants(): Promise<OperationResultPayload> {
       scannedComponentSetCount: componentSets.length,
       affectedComponentSetCount: plans.length,
       skippedComponentSets,
-      alertMigrationCount: colorModeMigrationCount,
       colorModeMigrationCount,
       removeCount,
       renameCount,
@@ -1014,7 +1046,6 @@ async function applyUnsupportedVariantPlans(): Promise<OperationResultPayload> {
       removedCount: removed.length,
       renamedCount: renamed.length,
       failedCount: failed.length,
-      alertMigration: colorModeMigration,
       colorModeMigration,
       removed,
       renamed,
@@ -1209,6 +1240,9 @@ async function applyColorModeMigration(): Promise<JsonValue> {
 
       // These components keep their color variants, but the actual color should
       // resolve through Color modes instead of semantic variables.
+      // Bound because Figma's node proxies lose `this` when methods are
+      // extracted into local references — calling .bind once keeps the call
+      // site readable below.
       const setExplicitVariableModeForCollection = component.setExplicitVariableModeForCollection.bind(component);
       setExplicitVariableModeForCollection(colorCollection, mode.modeId);
 
@@ -1551,6 +1585,8 @@ async function applyMissingInstancePlans(): Promise<OperationResultPayload> {
         if (shouldSkipMode) {
           skippedModeCount += 1;
         } else {
+          // Bound because Figma's node proxies lose `this` when extracted
+          // into a local; see also the apply-color-mode-migration path.
           const setExplicitVariableModeForCollection = instance.setExplicitVariableModeForCollection.bind(instance);
           setExplicitVariableModeForCollection(colorCollection, modeId);
         }
@@ -1603,6 +1639,476 @@ async function applyMissingInstancePlans(): Promise<OperationResultPayload> {
   };
 }
 
+const COLOR_PROBE_MAX_DEPTH = 6;
+
+type BoundColorHit = {
+  variableId: string;
+  node: SceneNode;
+  paintIndex: number;
+  source: 'fill' | 'stroke';
+};
+
+// Generic DFS over a subtree, calling `visit` for each fill/stroke that
+// carries a bound color variable. Stops at the first visitor result that
+// isn't null. Used both for plain ID lookups (apply path) and rich metadata
+// dumps (debug path) — returning null from the visitor keeps searching.
+async function visitFirstBoundColor<T>(
+  node: SceneNode,
+  depth: number,
+  visit: (hit: BoundColorHit) => Promise<T | null>,
+): Promise<T | null> {
+  if (depth > COLOR_PROBE_MAX_DEPTH) {
+    return null;
+  }
+
+  if ('fills' in node && Array.isArray(node.fills)) {
+    for (let index = 0; index < node.fills.length; index += 1) {
+      const fill = node.fills[index];
+      const variableId = fill && fill.boundVariables && fill.boundVariables.color
+        ? fill.boundVariables.color.id
+        : null;
+      if (variableId) {
+        const result = await visit({ variableId, node, paintIndex: index, source: 'fill' });
+        if (result) {
+          return result;
+        }
+      }
+    }
+  }
+
+  if ('strokes' in node && Array.isArray(node.strokes)) {
+    for (let index = 0; index < node.strokes.length; index += 1) {
+      const stroke = node.strokes[index];
+      const variableId = stroke && stroke.boundVariables && stroke.boundVariables.color
+        ? stroke.boundVariables.color.id
+        : null;
+      if (variableId) {
+        const result = await visit({ variableId, node, paintIndex: index, source: 'stroke' });
+        if (result) {
+          return result;
+        }
+      }
+    }
+  }
+
+  if ('children' in node && Array.isArray(node.children)) {
+    for (const child of node.children) {
+      const result = await visitFirstBoundColor(child, depth + 1, visit);
+      if (result) {
+        return result;
+      }
+    }
+  }
+
+  return null;
+}
+
+async function findFirstBoundColorVariableId(node: SceneNode): Promise<string | null> {
+  return visitFirstBoundColor(node, 0, async (hit) => hit.variableId);
+}
+
+async function findColorCollectionForComponentSet(componentSet: ComponentSetNode): Promise<VariableCollection | null> {
+  for (const child of componentSet.children) {
+    if (child.type !== 'COMPONENT') {
+      continue;
+    }
+    const variableId = await findFirstBoundColorVariableId(child);
+    if (!variableId) {
+      continue;
+    }
+    try {
+      const variable = await figma.variables.getVariableByIdAsync(variableId);
+      if (!variable) {
+        continue;
+      }
+      const collection = await figma.variables.getVariableCollectionByIdAsync(variable.variableCollectionId);
+      if (collection && COLOR_COLLECTION_NAMES.indexOf(collection.name) !== -1) {
+        return collection;
+      }
+    } catch {
+      // continue searching
+    }
+  }
+  return null;
+}
+
+function findVariantByNonColorProps(componentSet: ComponentSetNode, instance: InstanceNode): ComponentNode | null {
+  const targetValues: Record<string, string> = {};
+  const props = instance.componentProperties;
+  for (const propName of Object.keys(props)) {
+    const prop = props[propName];
+    if (prop.type === 'VARIANT' && !isColorVariantPropertyName(propName)) {
+      targetValues[propName] = String(prop.value);
+    }
+  }
+
+  for (const child of componentSet.children) {
+    if (child.type !== 'COMPONENT') {
+      continue;
+    }
+    if (variantMatchesPropertyValues(child, targetValues)) {
+      return child;
+    }
+  }
+  return null;
+}
+
+function getInstanceColorPropertyValue(instance: InstanceNode): string | null {
+  const props = instance.componentProperties;
+  for (const propName of Object.keys(props)) {
+    if (!isColorVariantPropertyName(propName)) {
+      continue;
+    }
+    const prop = props[propName];
+    if (prop.type === 'VARIANT') {
+      return String(prop.value);
+    }
+  }
+  return null;
+}
+
+async function findLegacyColorModeOverride(instance: InstanceNode): Promise<{
+  collectionId: string;
+  collectionName: string;
+  modeName: string;
+} | null> {
+  const explicit = instance.explicitVariableModes || {};
+  for (const collectionId of Object.keys(explicit)) {
+    const modeId = explicit[collectionId];
+    try {
+      const collection = await figma.variables.getVariableCollectionByIdAsync(collectionId);
+      if (!collection) {
+        continue;
+      }
+      if (LEGACY_COLOR_COLLECTION_NAMES.indexOf(collection.name) === -1) {
+        continue;
+      }
+      const mode = collection.modes.find((m) => m.modeId === modeId);
+      if (!mode) {
+        continue;
+      }
+      return {
+        collectionId,
+        collectionName: collection.name,
+        modeName: mode.name,
+      };
+    } catch {
+      // continue
+    }
+  }
+  return null;
+}
+
+async function scanLibraryStuckInstances(scope: FixScope): Promise<OperationResultPayload> {
+  const operation: Operation = 'scan-library-stuck-instances';
+  pendingLibraryStuckInstancePlans = [];
+
+  postOperationProgress({ operation, message: getScopeLoadingMessage(scope) });
+
+  const instances = await getInstancesForScope(scope);
+
+  const candidates: Array<{ instance: InstanceNode; colorValue: string; oldComponentSetKey: string; oldComponentSetName: string }> = [];
+
+  for (let index = 0; index < instances.length; index += 1) {
+    const instance = instances[index];
+    const main = await instance.getMainComponentAsync();
+    if (!main || !main.remote || !main.parent || main.parent.type !== 'COMPONENT_SET') {
+      continue;
+    }
+    const colorValue = getInstanceColorPropertyValue(instance);
+    if (colorValue === null) {
+      continue;
+    }
+    const oldComponentSet = main.parent as ComponentSetNode;
+    // Alert and ValidationMessage intentionally keep their color variant as
+    // a severity selector (info / warning / danger / success). Figma's
+    // library update path keeps these instances in sync automatically, so
+    // we must not include them as migration candidates — otherwise the
+    // variant lookup would strip the severity and swap to the default
+    // (typically info) and clear any explicit mode.
+    if (COLOR_MODE_MIGRATION_COMPONENT_SET_NAMES.some(
+      (name) => normalizeToken(name) === normalizeToken(oldComponentSet.name),
+    )) {
+      continue;
+    }
+    candidates.push({
+      instance,
+      colorValue,
+      oldComponentSetKey: oldComponentSet.key,
+      oldComponentSetName: oldComponentSet.name,
+    });
+
+    if ((index + 1) % 10 === 0 || index + 1 === instances.length) {
+      postOperationProgress({
+        operation,
+        message: 'Scanning instances...',
+        processed: index + 1,
+        total: instances.length,
+      });
+    }
+  }
+
+  const uniqueKeys = new Set<string>();
+  for (const candidate of candidates) {
+    uniqueKeys.add(candidate.oldComponentSetKey);
+  }
+
+  // Import all needed component sets in parallel. Each import triggers a
+  // round-trip to Figma's main thread, so running them sequentially scales
+  // badly on files with many unique component sets.
+  const importResults = await Promise.all(
+    Array.from(uniqueKeys).map(async (key) => {
+      try {
+        const newSet = await figma.importComponentSetByKeyAsync(key);
+        const collection = await findColorCollectionForComponentSet(newSet);
+        return { key, newSet, collection, error: null as string | null };
+      } catch (error) {
+        return {
+          key,
+          newSet: null,
+          collection: null,
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+    })
+  );
+
+  const newComponentSetByKey = new Map<string, ComponentSetNode>();
+  const colorCollectionByKey = new Map<string, VariableCollection>();
+  const importErrorByKey = new Map<string, string>();
+  let fallbackColorCollection: VariableCollection | null = null;
+  for (const result of importResults) {
+    if (result.error || !result.newSet) {
+      if (result.error) {
+        importErrorByKey.set(result.key, result.error);
+      }
+      continue;
+    }
+    newComponentSetByKey.set(result.key, result.newSet);
+    if (result.collection) {
+      colorCollectionByKey.set(result.key, result.collection);
+      if (!fallbackColorCollection) {
+        fallbackColorCollection = result.collection;
+      }
+    }
+  }
+
+  const plans: LibraryStuckInstancePlan[] = [];
+  for (const candidate of candidates) {
+    const instance = candidate.instance;
+    const legacy = await findLegacyColorModeOverride(instance);
+
+    const plan: LibraryStuckInstancePlan = {
+      instanceId: instance.id,
+      instanceName: instance.name,
+      parentName: instance.parent ? instance.parent.name : null,
+      pageName: getPageName(instance),
+      oldColorValue: candidate.colorValue,
+      oldComponentSetKey: candidate.oldComponentSetKey,
+      oldComponentSetName: candidate.oldComponentSetName,
+      legacyModeCollectionId: legacy ? legacy.collectionId : null,
+      legacyModeCollectionName: legacy ? legacy.collectionName : null,
+      legacyModeName: legacy ? legacy.modeName : null,
+      targetColorCollectionId: null,
+      targetModeId: null,
+      targetModeName: null,
+      targetComponentId: null,
+      targetComponentName: null,
+      needsSupportModeChoice: false,
+      status: 'blocked',
+      reason: undefined,
+    };
+
+    const newSet = newComponentSetByKey.get(candidate.oldComponentSetKey);
+    if (!newSet) {
+      const importError = importErrorByKey.get(candidate.oldComponentSetKey);
+      plan.reason = importError
+        ? `Could not import "${candidate.oldComponentSetName}" from library: ${importError}`
+        : `Could not import "${candidate.oldComponentSetName}" from library.`;
+      plans.push(plan);
+      continue;
+    }
+
+    const targetVariant = findVariantByNonColorProps(newSet, instance);
+    if (!targetVariant) {
+      plan.reason = 'No matching variant in updated component.';
+      plans.push(plan);
+      continue;
+    }
+    plan.targetComponentId = targetVariant.id;
+    plan.targetComponentName = targetVariant.name;
+
+    const colorCollection = colorCollectionByKey.get(candidate.oldComponentSetKey) || fallbackColorCollection;
+    plan.targetColorCollectionId = colorCollection ? colorCollection.id : null;
+
+    let desiredModeName: string | null = null;
+    if (legacy) {
+      desiredModeName = legacy.modeName;
+    } else if (normalizeToken(candidate.colorValue) === 'neutral') {
+      desiredModeName = NEUTRAL_MODE_NAME;
+    } else if (normalizeToken(candidate.colorValue) === 'main') {
+      desiredModeName = null;
+    } else if (normalizeToken(candidate.colorValue) === 'support') {
+      // Pre-migration the library exposed a separate "Support color"
+      // collection for picking which brand-specific color the variant
+      // used (brand1, brand2, …). Without an explicit mode override we
+      // have no signal to recover the user's intent — the variant value
+      // alone tells us only "support, unspecified". Surface this so the
+      // user can pick a fallback via the UI dropdown.
+      plan.needsSupportModeChoice = true;
+      plan.status = 'review';
+      plan.reason = 'No explicit support mode set — pick a fallback below to migrate.';
+      plans.push(plan);
+      continue;
+    }
+
+    if (desiredModeName) {
+      if (!colorCollection) {
+        plan.reason = 'Could not find the new Color collection.';
+        plans.push(plan);
+        continue;
+      }
+      const mode = colorCollection.modes.find((m) => normalizeToken(m.name) === normalizeToken(desiredModeName as string));
+      if (mode) {
+        plan.targetModeName = mode.name;
+        plan.targetModeId = mode.modeId;
+        plan.status = 'ready';
+      } else {
+        plan.status = 'review';
+        plan.reason = `Mode "${desiredModeName}" does not exist in the new Color collection — set it manually after update.`;
+      }
+    } else {
+      plan.status = 'ready';
+    }
+
+    plans.push(plan);
+  }
+
+  pendingLibraryStuckInstancePlans = plans;
+
+  const readyCount = plans.filter((p) => p.status === 'ready').length;
+  const reviewCount = plans.filter((p) => p.status === 'review').length;
+  const blockedCount = plans.filter((p) => p.status === 'blocked').length;
+  const supportFallbackCount = plans.filter((p) => p.needsSupportModeChoice).length;
+
+  const availableColorModes: JsonValue[] = fallbackColorCollection
+    ? fallbackColorCollection.modes.map((m) => ({ modeId: m.modeId, name: m.name }))
+    : [];
+
+  const hasAnyWork = readyCount + reviewCount > 0;
+
+  return {
+    createdAt: new Date().toISOString(),
+    operation,
+    status: hasAnyWork ? 'preview' : 'noop',
+    message: hasAnyWork
+      ? `Scanned ${instances.length} instances. ${readyCount} can be updated, ${reviewCount} need review, ${blockedCount} blocked.`
+      : `Scanned ${instances.length} instances. No stuck library instances found.`,
+    details: {
+      scannedInstanceCount: instances.length,
+      candidateCount: candidates.length,
+      readyCount,
+      reviewCount,
+      blockedCount,
+      supportFallbackCount,
+      availableColorModes,
+      plans: plans as unknown as JsonValue,
+    },
+  };
+}
+
+async function applyLibraryStuckInstancePlans(supportFallbackModeId: string | null): Promise<OperationResultPayload> {
+  const operation: Operation = 'apply-library-stuck-instances';
+  const plans = pendingLibraryStuckInstancePlans;
+
+  let fixedCount = 0;
+  let failedCount = 0;
+  const failures: Array<{ instanceId: string; instanceName: string; reason: string }> = [];
+
+  const applicablePlans = plans.filter((p) => p.status !== 'blocked');
+
+  for (let index = 0; index < applicablePlans.length; index += 1) {
+    const plan = applicablePlans[index];
+
+    try {
+      const instance = await figma.getNodeByIdAsync(plan.instanceId);
+      if (!instance || instance.type !== 'INSTANCE') {
+        throw new Error('Instance no longer exists.');
+      }
+
+      if (!plan.targetComponentId) {
+        throw new Error('Target variant missing in plan.');
+      }
+      const targetVariant = await figma.getNodeByIdAsync(plan.targetComponentId);
+      if (!targetVariant || targetVariant.type !== 'COMPONENT') {
+        throw new Error('Target variant no longer resolves.');
+      }
+
+      const instanceNode = instance as InstanceNode;
+
+      instanceNode.swapComponent(targetVariant as ComponentNode);
+
+      if (plan.legacyModeCollectionId) {
+        try {
+          const legacyCollection = await figma.variables.getVariableCollectionByIdAsync(plan.legacyModeCollectionId);
+          if (legacyCollection) {
+            instanceNode.clearExplicitVariableModeForCollection(legacyCollection);
+          }
+        } catch {
+          // ignore — clearing is best-effort
+        }
+      }
+
+      const effectiveModeId = plan.needsSupportModeChoice && supportFallbackModeId
+        ? supportFallbackModeId
+        : plan.targetModeId;
+
+      if (effectiveModeId && plan.targetColorCollectionId) {
+        const colorCollection = await figma.variables.getVariableCollectionByIdAsync(plan.targetColorCollectionId);
+        if (colorCollection) {
+          instanceNode.setExplicitVariableModeForCollection(colorCollection, effectiveModeId);
+        }
+      }
+
+      fixedCount += 1;
+    } catch (error) {
+      failedCount += 1;
+      failures.push({
+        instanceId: plan.instanceId,
+        instanceName: plan.instanceName,
+        reason: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    if ((index + 1) % 10 === 0 || index + 1 === applicablePlans.length) {
+      postOperationProgress({
+        operation,
+        message: 'Updating instances...',
+        processed: index + 1,
+        total: applicablePlans.length,
+      });
+    }
+  }
+
+  if (fixedCount > 0) {
+    figma.commitUndo();
+  }
+  pendingLibraryStuckInstancePlans = [];
+
+  return {
+    createdAt: new Date().toISOString(),
+    operation,
+    status: failedCount > 0 ? 'error' : 'success',
+    message: `Updated ${fixedCount} instance${fixedCount === 1 ? '' : 's'}${failedCount > 0 ? `, failed ${failedCount}` : ''}.`,
+    details: {
+      fixedCount,
+      failedCount,
+      failures: failures as unknown as JsonValue,
+    },
+  };
+}
+
+
 async function runOperation(operation: Operation, callback: () => Promise<OperationResultPayload>) {
   postToUi({
     type: 'operation-result',
@@ -1638,5 +2144,15 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
 
   if (msg.type === 'apply-missing-instances') {
     await runOperation('apply-missing-instances', applyMissingInstancePlans);
+    return;
+  }
+
+  if (msg.type === 'scan-library-stuck-instances') {
+    await runOperation('scan-library-stuck-instances', () => scanLibraryStuckInstances(msg.scope));
+    return;
+  }
+
+  if (msg.type === 'apply-library-stuck-instances') {
+    await runOperation('apply-library-stuck-instances', () => applyLibraryStuckInstancePlans(msg.supportFallbackModeId));
   }
 };
