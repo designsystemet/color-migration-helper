@@ -1,4 +1,5 @@
 type Operation =
+  | 'check-prime-status'
   | 'prime-variables'
   | 'scan-unsupported-variants'
   | 'apply-unsupported-variants'
@@ -11,6 +12,7 @@ type Operation =
 type FixScope = 'selection' | 'page' | 'file';
 
 type PluginMessage =
+  | { type: 'check-prime-status' }
   | { type: 'prime-variables' }
   | { type: 'scan-unsupported-variants' }
   | { type: 'apply-unsupported-variants' }
@@ -464,6 +466,68 @@ function moveDuplicateRenameTargetsToSkipped(plan: ComponentSetRemovalPlan) {
   }
 
   plan.variantsToRename = uniqueRenames;
+}
+
+async function checkPrimeStatus(): Promise<OperationResultPayload> {
+  const operation: Operation = 'check-prime-status';
+  const sourceCollectionName = 'Main color';
+  const supportCollectionName = 'Support color';
+  const targetCollectionName = 'Color';
+  const variablePrefix = 'color/main/';
+
+  const collections = await figma.variables.getLocalVariableCollectionsAsync();
+  const hasMainColor = collections.some((c) => c.name === sourceCollectionName);
+  const hasSupportColor = collections.some((c) => c.name === supportCollectionName);
+  const hasColor = collections.some((c) => c.name === targetCollectionName);
+
+  // Look for variables that still carry the legacy prefix in either the
+  // pre- or post-rename collection. Both states can exist mid-migration.
+  let prefixedVariableCount = 0;
+  for (const collection of collections) {
+    if (collection.name !== sourceCollectionName && collection.name !== targetCollectionName) {
+      continue;
+    }
+    for (const variableId of collection.variableIds) {
+      const variable = await figma.variables.getVariableByIdAsync(variableId);
+      if (variable && variable.name.startsWith(variablePrefix)) {
+        prefixedVariableCount += 1;
+      }
+    }
+  }
+
+  // Three states:
+  // - `not-library`: none of the known color collections exist. Almost
+  //   certainly not a Core UI Kit library file.
+  // - `ready`: post-migration shape. Color exists, Main color gone, no
+  //   variables still carrying the legacy prefix.
+  // - `needs`: anything in between — at least one signal of a library
+  //   that hasn't been fully prepared.
+  let state: 'not-library' | 'needs' | 'ready';
+  if (!hasColor && !hasMainColor && !hasSupportColor) {
+    state = 'not-library';
+  } else if (hasColor && !hasMainColor && prefixedVariableCount === 0) {
+    state = 'ready';
+  } else {
+    state = 'needs';
+  }
+
+  return {
+    createdAt: new Date().toISOString(),
+    operation,
+    status: 'success',
+    message: state === 'ready'
+      ? 'Variables are already prepared.'
+      : state === 'not-library'
+        ? 'This file does not appear to be a library file.'
+        : 'Variables still need preparation.',
+    details: {
+      hasMainColor,
+      hasColor,
+      hasSupportColor,
+      prefixedVariableCount,
+      state,
+    },
+  };
 }
 
 async function primeVariables(): Promise<OperationResultPayload> {
@@ -2117,6 +2181,11 @@ async function runOperation(operation: Operation, callback: () => Promise<Operat
 }
 
 figma.ui.onmessage = async (msg: PluginMessage) => {
+  if (msg.type === 'check-prime-status') {
+    await runOperation('check-prime-status', checkPrimeStatus);
+    return;
+  }
+
   if (msg.type === 'prime-variables') {
     await runOperation('prime-variables', primeVariables);
     return;

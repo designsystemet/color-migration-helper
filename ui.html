@@ -26,9 +26,75 @@
     padding: 16px;
   }
 
+  .view {
+    display: none;
+    gap: 12px;
+  }
+
+  .view.view-active {
+    display: grid;
+  }
+
+  .landing {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    padding: 8px 0;
+  }
+
+  .landing-card {
+    display: grid;
+    justify-items: center;
+    align-content: center;
+    gap: 12px;
+    min-height: 140px;
+    padding: 20px;
+    text-align: center;
+  }
+
+  .landing-card svg {
+    width: 28px;
+    height: 28px;
+    color: var(--figma-color-icon, #1e1e1e);
+  }
+
+  .landing-card-label {
+    font-weight: 600;
+    font-size: 13px;
+  }
+
+  .view-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 32px;
+  }
+
+  .back-button {
+    display: grid;
+    place-items: center;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: var(--figma-color-text-secondary, #6b6b6b);
+    cursor: pointer;
+  }
+
+  .back-button:hover {
+    background: var(--figma-color-bg-hover, #f0f0f0);
+    border-radius: 4px;
+  }
+
+  .back-button svg {
+    width: 16px;
+    height: 16px;
+  }
+
   .segmented {
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: repeat(3, 1fr);
     gap: 2px;
     border: 1px solid var(--figma-color-border, #d9d9d9);
     border-radius: 6px;
@@ -200,84 +266,136 @@
       transform: rotate(360deg);
     }
   }
-
 </style>
 
 <div class="app">
   <main>
-    <div class="segmented" role="tablist">
-      <button class="segment active" data-step="prime" role="tab" aria-selected="true" aria-controls="step-prime" id="tab-prime">1. Prepare</button>
-      <button class="segment" data-step="variants" role="tab" aria-selected="false" aria-controls="step-variants" id="tab-variants">2. Remove variants</button>
-      <button class="segment" data-step="instances" role="tab" aria-selected="false" aria-controls="step-instances" id="tab-instances">3. Fix in library</button>
-      <button class="segment" data-step="library" role="tab" aria-selected="false" aria-controls="step-library" id="tab-library">4. Update sketches</button>
-    </div>
 
-    <section class="step active" id="step-prime" role="tabpanel" aria-labelledby="tab-prime" tabindex="0">
-      <section class="panel">
-        <div class="panel-title">Prepare variables</div>
-        <p>Rename the Main color collection to Color and remove color/main/ from variable names.</p>
-        <div class="toolbar" style="margin-top: 10px;">
-          <button class="primary" id="prime">Prepare variables</button>
-        </div>
+    <!-- Landing view -->
+    <section class="view view-active" id="view-landing">
+      <div class="landing">
+        <button class="landing-card" data-target-view="library">
+          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <rect x="4" y="4" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.5"/>
+            <rect x="13" y="4" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.5"/>
+            <rect x="4" y="13" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.5"/>
+            <rect x="13" y="13" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.5"/>
+          </svg>
+          <span class="landing-card-label">Update library</span>
+        </button>
+        <button class="landing-card" data-target-view="sketches">
+          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <path d="M5 4h10l5 5v11a1 1 0 01-1 1H5a1 1 0 01-1-1V5a1 1 0 011-1z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+            <path d="M15 4v4a1 1 0 001 1h4" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+          </svg>
+          <span class="landing-card-label">Update sketches</span>
+        </button>
+      </div>
+    </section>
+
+    <!-- Library view -->
+    <section class="view" id="view-library">
+      <div class="view-header">
+        <button class="back-button" data-target-view="landing" aria-label="Back">
+          <svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <path d="M10 3L5 8l5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
+      </div>
+
+      <div class="segmented" role="tablist">
+        <button class="segment active" data-step="prime" role="tab" aria-selected="true" aria-controls="step-prime" id="tab-prime">1. Prepare</button>
+        <button class="segment" data-step="variants" role="tab" aria-selected="false" aria-controls="step-variants" id="tab-variants">2. Remove variants</button>
+        <button class="segment" data-step="instances" role="tab" aria-selected="false" aria-controls="step-instances" id="tab-instances">3. Fix in library</button>
+      </div>
+
+      <section class="step active" id="step-prime" role="tabpanel" aria-labelledby="tab-prime" tabindex="0">
+        <section class="panel">
+          <div class="panel-title">Prepare variables</div>
+          <div class="prime-state" id="primeStateChecking">
+            <p>Checking variable state...</p>
+          </div>
+          <div class="prime-state is-hidden" id="primeStateNeeds">
+            <p>Rename the Main color collection to Color and remove color/main/ from variable names.</p>
+            <div class="toolbar" style="margin-top: 10px;">
+              <button class="primary" id="prime">Prepare variables</button>
+            </div>
+          </div>
+          <div class="prime-state is-hidden" id="primeStateReady">
+            <p>Variables are correct and ready to be updated with Token Studio.</p>
+          </div>
+          <div class="prime-state is-hidden" id="primeStateNotLibrary">
+            <p>This file does not appear to be a Core UI Kit library. Open the library file to run these steps.</p>
+          </div>
+        </section>
+        <section class="panel is-hidden" id="primeResultPanel">
+          <div class="panel-title">Result</div>
+          <div class="summary-line" id="primeSummary"></div>
+          <div class="details-list" id="primeDetails"></div>
+        </section>
       </section>
-      <section class="panel is-hidden" id="primeResultPanel">
-        <div class="panel-title">Result</div>
-        <div class="summary-line" id="primeSummary"></div>
-        <div class="details-list" id="primeDetails"></div>
+
+      <section class="step" id="step-variants" role="tabpanel" aria-labelledby="tab-variants" tabindex="0">
+        <section class="panel">
+          <div class="panel-title">Remove variants</div>
+          <p>Remove old color variants, update variant names, and move Alert and ValidationMessage colors to modes.</p>
+          <div class="toolbar" style="margin-top: 10px;">
+            <button class="primary" id="scanVariants">Scan variants</button>
+          </div>
+        </section>
+        <section class="panel is-hidden" id="variantsResultPanel">
+          <div class="panel-title">Variant scan result</div>
+          <div class="summary-line" id="variantsSummary"></div>
+          <div class="details-list" id="variantsDetails"></div>
+          <div class="toolbar" style="margin-top: 10px;">
+            <button class="primary" id="applyVariants" disabled>Remove and update variants</button>
+          </div>
+        </section>
+      </section>
+
+      <section class="step" id="step-instances" role="tabpanel" aria-labelledby="tab-instances" tabindex="0">
+        <section class="panel">
+          <div class="panel-title">Update missing instances</div>
+          <p>Find instances that used old color variants and move them to the matching current variant.</p>
+          <div class="control-row stacked" style="margin-top: 10px;">
+            <label>
+              Scope
+              <select id="fixScope">
+                <option value="selection">Selection</option>
+                <option value="page">Current page</option>
+                <option value="file">Whole file</option>
+              </select>
+            </label>
+            <label>
+              Use this mode for old support variants
+              <select id="supportMode"></select>
+            </label>
+          </div>
+          <div class="toolbar" style="margin-top: 10px;">
+            <button class="primary" id="scanMissing">Scan instances</button>
+          </div>
+        </section>
+        <section class="panel is-hidden" id="instancesResultPanel">
+          <div class="panel-title">Instance scan result</div>
+          <div class="summary-line" id="instancesSummary"></div>
+          <div class="details-list" id="instancesDetails"></div>
+          <div class="toolbar" style="margin-top: 10px;">
+            <button class="primary" id="applyMissing" disabled>Update instances</button>
+          </div>
+        </section>
       </section>
     </section>
 
-    <section class="step" id="step-variants" role="tabpanel" aria-labelledby="tab-variants" tabindex="0">
-      <section class="panel">
-        <div class="panel-title">Remove variants</div>
-        <p>Remove old color variants, update variant names, and move Alert and ValidationMessage colors to modes.</p>
-        <div class="toolbar" style="margin-top: 10px;">
-          <button class="primary" id="scanVariants">Scan variants</button>
-        </div>
-      </section>
-      <section class="panel is-hidden" id="variantsResultPanel">
-        <div class="panel-title">Variant scan result</div>
-        <div class="summary-line" id="variantsSummary"></div>
-        <div class="details-list" id="variantsDetails"></div>
-        <div class="toolbar" style="margin-top: 10px;">
-          <button class="primary" id="applyVariants" disabled>Remove and update variants</button>
-        </div>
-      </section>
-    </section>
+    <!-- Sketches view -->
+    <section class="view" id="view-sketches">
+      <div class="view-header">
+        <button class="back-button" data-target-view="landing" aria-label="Back">
+          <svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <path d="M10 3L5 8l5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
+      </div>
 
-    <section class="step" id="step-instances" role="tabpanel" aria-labelledby="tab-instances" tabindex="0">
-      <section class="panel">
-        <div class="panel-title">Update missing instances</div>
-        <p>Find instances that used old color variants and move them to the matching current variant.</p>
-        <div class="control-row stacked" style="margin-top: 10px;">
-          <label>
-            Scope
-            <select id="fixScope">
-              <option value="selection">Selection</option>
-              <option value="page">Current page</option>
-              <option value="file">Whole file</option>
-            </select>
-          </label>
-          <label>
-            Use this mode for old support variants
-            <select id="supportMode"></select>
-          </label>
-        </div>
-        <div class="toolbar" style="margin-top: 10px;">
-          <button class="primary" id="scanMissing">Scan instances</button>
-        </div>
-      </section>
-      <section class="panel is-hidden" id="instancesResultPanel">
-        <div class="panel-title">Instance scan result</div>
-        <div class="summary-line" id="instancesSummary"></div>
-        <div class="details-list" id="instancesDetails"></div>
-        <div class="toolbar" style="margin-top: 10px;">
-          <button class="primary" id="applyMissing" disabled>Update instances</button>
-        </div>
-      </section>
-    </section>
-
-    <section class="step" id="step-library" role="tabpanel" aria-labelledby="tab-library" tabindex="0">
       <section class="panel">
         <div class="panel-title">Update sketches that use this library</div>
         <p>Find instances stuck on the pre-migration library version and update them to the current one. Run this in your sketch file after updating the library.</p>
@@ -322,9 +440,15 @@
 </div>
 
 <script>
+  const viewSections = Array.from(document.querySelectorAll('.view'));
+  const targetViewButtons = Array.from(document.querySelectorAll('[data-target-view]'));
   const segmentButtons = Array.from(document.querySelectorAll('.segment'));
   const stepPanels = Array.from(document.querySelectorAll('.step'));
   const primeButton = document.getElementById('prime');
+  const primeStateChecking = document.getElementById('primeStateChecking');
+  const primeStateNeeds = document.getElementById('primeStateNeeds');
+  const primeStateReady = document.getElementById('primeStateReady');
+  const primeStateNotLibrary = document.getElementById('primeStateNotLibrary');
   const scanVariantsButton = document.getElementById('scanVariants');
   const applyVariantsButton = document.getElementById('applyVariants');
   const fixScopeSelect = document.getElementById('fixScope');
@@ -355,6 +479,41 @@
 
   function send(message) {
     parent.postMessage({ pluginMessage: typeof message === 'string' ? { type: message } : message }, '*');
+  }
+
+  function setPrimeState(state) {
+    primeStateChecking.classList.toggle('is-hidden', state !== 'checking');
+    primeStateNeeds.classList.toggle('is-hidden', state !== 'needs');
+    primeStateReady.classList.toggle('is-hidden', state !== 'ready');
+    primeStateNotLibrary.classList.toggle('is-hidden', state !== 'not-library');
+  }
+
+  function resetLibraryFlowState() {
+    primeResultPanel.classList.add('is-hidden');
+    variantsResultPanel.classList.add('is-hidden');
+    instancesResultPanel.classList.add('is-hidden');
+    resetVariantButtons();
+    resetMissingButtons();
+    setPrimeState('checking');
+    selectStep('prime');
+  }
+
+  function resetSketchesFlowState() {
+    libraryResultPanel.classList.add('is-hidden');
+    resetLibraryButtons();
+  }
+
+  function switchView(viewName) {
+    for (const view of viewSections) {
+      view.classList.toggle('view-active', view.id === `view-${viewName}`);
+    }
+
+    if (viewName === 'library') {
+      resetLibraryFlowState();
+      send('check-prime-status');
+    } else if (viewName === 'sketches') {
+      resetSketchesFlowState();
+    }
   }
 
   function selectStep(step) {
@@ -477,6 +636,13 @@
   function renderOperationResult(payload) {
     if (payload.operation === 'load-color-modes') {
       renderColorModes(payload);
+      setBusy(false);
+      return;
+    }
+
+    if (payload.operation === 'check-prime-status') {
+      const details = payload.details || {};
+      setPrimeState(details.state || 'needs');
       setBusy(false);
       return;
     }
@@ -763,6 +929,10 @@
     }
 
     return payload.message;
+  }
+
+  for (const button of targetViewButtons) {
+    button.onclick = () => switchView(button.dataset.targetView);
   }
 
   for (const button of segmentButtons) {
