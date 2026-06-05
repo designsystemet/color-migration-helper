@@ -482,11 +482,25 @@ async function getAllComponentSets() {
     }
     return componentSets;
 }
-function collectComponentSets(root, wantedNames) {
+// Walk the tree and collect both ComponentSets and standalone Components
+// whose names match. A "standalone" Component is one whose parent is not a
+// ComponentSet — these arise from Step 2's collapse path (single-variant
+// component sets are converted to standalone components named after the
+// original set).
+function collectComponentTargets(root, wantedNames) {
     const componentSets = [];
+    const standaloneComponents = [];
     const visit = (node) => {
-        if (node.type === 'COMPONENT_SET' && (!wantedNames || wantedNames.has(normalizeToken(node.name)))) {
-            componentSets.push(node);
+        if (node.type === 'COMPONENT_SET') {
+            if (!wantedNames || wantedNames.has(normalizeToken(node.name))) {
+                componentSets.push(node);
+            }
+        }
+        else if (node.type === 'COMPONENT') {
+            const isStandalone = !node.parent || node.parent.type !== 'COMPONENT_SET';
+            if (isStandalone && (!wantedNames || wantedNames.has(normalizeToken(node.name)))) {
+                standaloneComponents.push(node);
+            }
         }
         if (shouldTraverseChildren(node)) {
             for (const child of node.children) {
@@ -495,26 +509,31 @@ function collectComponentSets(root, wantedNames) {
         }
     };
     visit(root);
-    return componentSets;
+    return { componentSets, standaloneComponents };
 }
 function getMissingComponentSetNames(plans) {
     return new Set(plans
         .filter((plan) => plan.componentSetName !== 'Unknown')
         .map((plan) => normalizeToken(plan.componentSetName)));
 }
-async function findComponentSetsByNames(wantedNames, scope) {
+async function findComponentTargetsByNames(wantedNames, scope) {
     if (wantedNames.size === 0) {
         return {
             componentSets: [],
+            standaloneComponents: [],
             searchedWholeFile: false,
         };
     }
-    const currentPageSets = collectComponentSets(figma.currentPage, wantedNames);
-    const foundNames = new Set(currentPageSets.map((componentSet) => normalizeToken(componentSet.name)));
+    const currentPage = collectComponentTargets(figma.currentPage, wantedNames);
+    const foundNames = new Set([
+        ...currentPage.componentSets.map((node) => normalizeToken(node.name)),
+        ...currentPage.standaloneComponents.map((node) => normalizeToken(node.name)),
+    ]);
     const missingNames = Array.from(wantedNames).filter((name) => !foundNames.has(name));
     if (missingNames.length === 0 && scope !== 'file') {
         return {
-            componentSets: currentPageSets,
+            componentSets: currentPage.componentSets,
+            standaloneComponents: currentPage.standaloneComponents,
             searchedWholeFile: false,
         };
     }
@@ -522,21 +541,33 @@ async function findComponentSetsByNames(wantedNames, scope) {
     // target set is not on the current page or the user explicitly scans the file.
     // Keep the current-page results we already have and only scan the other pages.
     await figma.loadAllPagesAsync();
-    const allSets = [...currentPageSets];
-    const seenIds = new Set(currentPageSets.map((componentSet) => componentSet.id));
+    const allSets = [...currentPage.componentSets];
+    const allStandalone = [...currentPage.standaloneComponents];
+    const seenIds = new Set([
+        ...currentPage.componentSets.map((node) => node.id),
+        ...currentPage.standaloneComponents.map((node) => node.id),
+    ]);
     for (const page of figma.root.children) {
         if (page.id === figma.currentPage.id) {
             continue;
         }
-        for (const componentSet of collectComponentSets(page, wantedNames)) {
+        const pageTargets = collectComponentTargets(page, wantedNames);
+        for (const componentSet of pageTargets.componentSets) {
             if (!seenIds.has(componentSet.id)) {
                 allSets.push(componentSet);
                 seenIds.add(componentSet.id);
             }
         }
+        for (const standalone of pageTargets.standaloneComponents) {
+            if (!seenIds.has(standalone.id)) {
+                allStandalone.push(standalone);
+                seenIds.add(standalone.id);
+            }
+        }
     }
     return {
         componentSets: allSets,
+        standaloneComponents: allStandalone,
         searchedWholeFile: true,
     };
 }
@@ -634,6 +665,7 @@ async function scanUnsupportedVariants() {
                 variantsToRemove: [],
                 variantsToRename: [],
                 skippedRenames: [],
+                willCollapseToSingleComponent: false,
             };
             for (const child of children) {
                 const color = getColorVariantPropertyValue(child);
@@ -664,7 +696,19 @@ async function scanUnsupportedVariants() {
                 }
             }
             moveDuplicateRenameTargetsToSkipped(plan);
-            if (plan.variantsToRemove.length > 0 || plan.variantsToRename.length > 0 || plan.skippedRenames.length > 0) {
+            // If only one variant remains after the removals, Figma will not let
+            // us drop the color property in place (every defined variant property
+            // requires at least one variant). Flag the set for conversion to a
+            // standalone component during apply, and skip the would-be rename of
+            // the surviving variant — it will be renamed to the set's name when
+            // it's reparented out.
+            const remainingVariantCount = children.length - plan.variantsToRemove.length;
+            if (remainingVariantCount === 1) {
+                plan.willCollapseToSingleComponent = true;
+                plan.variantsToRename = [];
+                plan.skippedRenames = [];
+            }
+            if (plan.variantsToRemove.length > 0 || plan.variantsToRename.length > 0 || plan.skippedRenames.length > 0 || plan.willCollapseToSingleComponent) {
                 plans.push(plan);
             }
         }
@@ -715,6 +759,58 @@ async function scanUnsupportedVariants() {
             plans,
         },
     };
+}
+// Convert a ComponentSet that has exactly one variant left into a standalone
+// component. The variant is reparented to the set's parent (preserving its
+// absolute position on the canvas), renamed to the set's name, and the now-
+// empty ComponentSet is removed. This handles the case where the only
+// remaining variant after color removal would prevent Figma from dropping
+// the color property in place.
+async function collapseSingleVariantComponentSet(plan) {
+    const componentSet = await figma.getNodeByIdAsync(plan.componentSetId);
+    if (!componentSet || componentSet.type !== 'COMPONENT_SET') {
+        throw new Error('Component set is no longer available.');
+    }
+    if (componentSet.children.length !== 1) {
+        throw new Error(`Expected 1 remaining variant, found ${componentSet.children.length}.`);
+    }
+    const survivingChild = componentSet.children[0];
+    if (survivingChild.type !== 'COMPONENT') {
+        throw new Error('Remaining child is not a component.');
+    }
+    const parent = componentSet.parent;
+    if (!parent || !('insertChild' in parent)) {
+        throw new Error('Component set has no reparentable parent.');
+    }
+    // Capture the absolute position of the surviving variant before reparenting.
+    // insertChild preserves the local x/y (which are relative to the source
+    // parent), so we need to restore the absolute position manually to avoid a
+    // visual jump on the canvas.
+    const transform = survivingChild.absoluteTransform;
+    const absoluteX = transform[0][2];
+    const absoluteY = transform[1][2];
+    const insertIndex = parent.children.indexOf(componentSet);
+    parent.insertChild(insertIndex, survivingChild);
+    let parentAbsX = 0;
+    let parentAbsY = 0;
+    if ('absoluteTransform' in parent) {
+        const parentTransform = parent.absoluteTransform;
+        parentAbsX = parentTransform[0][2];
+        parentAbsY = parentTransform[1][2];
+    }
+    survivingChild.x = absoluteX - parentAbsX;
+    survivingChild.y = absoluteY - parentAbsY;
+    survivingChild.name = plan.componentSetName;
+    // Figma auto-removes a ComponentSet when its last variant is reparented
+    // out — and any access (including `.parent`) on the orphaned reference
+    // throws. Try to remove explicitly in case this ever changes; swallow
+    // the error from the auto-removed case.
+    try {
+        componentSet.remove();
+    }
+    catch (_a) {
+        // already gone
+    }
 }
 async function applyUnsupportedVariantPlans() {
     const operation = 'apply-unsupported-variants';
@@ -818,6 +914,19 @@ async function applyUnsupportedVariantPlans() {
             processed,
             total: totalSteps,
         });
+        if (plan.willCollapseToSingleComponent) {
+            try {
+                await collapseSingleVariantComponentSet(plan);
+            }
+            catch (error) {
+                failed.push({
+                    id: plan.componentSetId,
+                    name: plan.componentSetName,
+                    action: 'collapse',
+                    reason: error instanceof Error ? error.message : String(error),
+                });
+            }
+        }
     }
     const colorModeMigration = await applyColorModeMigration();
     pendingUnsupportedVariantPlans = [];
@@ -1025,9 +1134,22 @@ async function applyColorModeMigration() {
         skipped,
     };
 }
-function findTargetComponent(componentSets, componentSetName, tokens) {
-    const componentSet = componentSets.find((candidate) => normalizeToken(candidate.name) === normalizeToken(componentSetName));
+function findTargetComponent(lookup, componentSetName, tokens) {
+    const componentSet = lookup.componentSets.find((candidate) => normalizeToken(candidate.name) === normalizeToken(componentSetName));
     if (!componentSet) {
+        // Fall back to a standalone Component with the same name. This is how
+        // a collapsed single-variant set surfaces after Step 2 — the surviving
+        // variant has been renamed to the original set's name.
+        const standalone = lookup.standaloneComponents.find((candidate) => normalizeToken(candidate.name) === normalizeToken(componentSetName));
+        if (standalone) {
+            return {
+                component: standalone,
+                reason: 'matched a standalone component (the set was collapsed during cleanup)',
+                candidateCount: 1,
+                candidateNames: [standalone.name],
+                targetPropertyValues: null,
+            };
+        }
         return {
             component: null,
             reason: `Could not find the "${componentSetName}" component set.`,
@@ -1165,11 +1287,10 @@ async function scanMissingInstances(scope, supportModeId) {
     pendingMissingInstancePlans = plans;
     if (plans.length > 0) {
         const wantedNames = getMissingComponentSetNames(plans);
-        const componentSetLookup = await findComponentSetsByNames(wantedNames, scope);
-        const componentSets = componentSetLookup.componentSets;
+        const targetLookup = await findComponentTargetsByNames(wantedNames, scope);
         for (const plan of plans) {
             const targetComponentResult = plan.componentSetName !== 'Unknown'
-                ? findTargetComponent(componentSets, plan.componentSetName, plan.nonColorTokens)
+                ? findTargetComponent(targetLookup, plan.componentSetName, plan.nonColorTokens)
                 : null;
             const targetComponent = (targetComponentResult === null || targetComponentResult === void 0 ? void 0 : targetComponentResult.component) || null;
             plan.targetComponentId = (targetComponent === null || targetComponent === void 0 ? void 0 : targetComponent.id) || null;
@@ -1784,5 +1905,23 @@ figma.ui.onmessage = async (msg) => {
     }
     if (msg.type === 'apply-library-stuck-instances') {
         await runOperation('apply-library-stuck-instances', () => applyLibraryStuckInstancePlans(msg.supportFallbackModeId));
+        return;
+    }
+    if (msg.type === 'focus-node') {
+        const node = await figma.getNodeByIdAsync(msg.nodeId);
+        if (!node || node.type === 'DOCUMENT' || node.type === 'PAGE') {
+            return;
+        }
+        // Walk up the parent chain to find the owning page so we can switch
+        // to it before scrolling — the node might live on another page.
+        let cursor = node.parent;
+        while (cursor && cursor.type !== 'PAGE') {
+            cursor = cursor.parent;
+        }
+        if (cursor && cursor.type === 'PAGE' && cursor.id !== figma.currentPage.id) {
+            await figma.setCurrentPageAsync(cursor);
+        }
+        figma.currentPage.selection = [node];
+        figma.viewport.scrollAndZoomIntoView([node]);
     }
 };

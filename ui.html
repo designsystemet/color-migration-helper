@@ -228,6 +228,49 @@
     line-height: 1.35;
   }
 
+  .instances-accordion {
+    margin-top: 10px;
+  }
+
+  .instances-accordion summary {
+    cursor: pointer;
+    font-weight: 550;
+    padding: 4px 0;
+    color: var(--figma-color-text, #1e1e1e);
+  }
+
+  .instance-list {
+    display: grid;
+    gap: 4px;
+    margin-top: 6px;
+    max-height: 280px;
+    overflow-y: auto;
+  }
+
+  .instance-link {
+    display: block;
+    width: 100%;
+    min-height: auto;
+    text-align: left;
+    padding: 8px 10px;
+    line-height: 1.35;
+  }
+
+  .instance-link:hover {
+    background: var(--figma-color-bg-hover, #f5f5f5);
+  }
+
+  .instance-link-name {
+    font-weight: 550;
+    color: var(--figma-color-text, #1e1e1e);
+  }
+
+  .instance-link-meta {
+    margin-top: 2px;
+    font-weight: 400;
+    color: var(--figma-color-text-secondary, #6b6b6b);
+  }
+
   .busy-overlay {
     position: fixed;
     inset: 0;
@@ -697,6 +740,11 @@
       return;
     }
 
+    if (payload.operation === 'apply-unsupported-variants') {
+      renderVariantsApplyDetails(payload);
+      return;
+    }
+
     if (payload.operation === 'scan-missing-instances') {
       renderMissingDetails(payload);
       return;
@@ -705,6 +753,51 @@
     if (payload.operation === 'scan-library-stuck-instances') {
       renderLibraryDetails(payload);
     }
+  }
+
+  function renderVariantsApplyDetails(payload) {
+    const details = payload.details || {};
+    const failed = Array.isArray(details.failed) ? details.failed : [];
+    if (failed.length === 0) {
+      return;
+    }
+
+    const accordion = document.createElement('details');
+    accordion.className = 'instances-accordion';
+    accordion.open = true;
+
+    const summary = document.createElement('summary');
+    summary.textContent = `Failed (${failed.length})`;
+    accordion.appendChild(summary);
+
+    const list = document.createElement('div');
+    list.className = 'instance-list';
+
+    for (const item of failed) {
+      const button = document.createElement('button');
+      button.className = 'instance-link';
+      button.dataset.nodeId = item.id;
+
+      const name = document.createElement('div');
+      name.className = 'instance-link-name';
+      name.textContent = item.name || 'Unnamed';
+
+      const meta = document.createElement('div');
+      meta.className = 'instance-link-meta';
+      const actionLabel = item.action ? `${item.action}` : 'unknown';
+      const reason = item.reason || 'Unknown reason';
+      meta.textContent = `${actionLabel} · ${reason}`;
+
+      button.append(name, meta);
+      button.onclick = () => {
+        send({ type: 'focus-node', nodeId: item.id });
+      };
+
+      list.appendChild(button);
+    }
+
+    accordion.appendChild(list);
+    activeDetails.appendChild(accordion);
   }
 
   function renderVariantsDetails(payload) {
@@ -805,6 +898,12 @@
 
   function renderLibraryDetails(payload) {
     const plans = payload.details && Array.isArray(payload.details.plans) ? payload.details.plans : [];
+
+    const ready = plans.filter((plan) => plan.status === 'ready');
+    if (ready.length > 0) {
+      renderReadyInstancesAccordion(ready);
+    }
+
     const flagged = plans.filter((plan) => plan.status === 'blocked' || plan.status === 'review');
     if (flagged.length === 0) {
       return;
@@ -846,6 +945,44 @@
       more.textContent = `${flagged.length - 20} more instances need review but are not shown.`;
       activeDetails.appendChild(more);
     }
+  }
+
+  function renderReadyInstancesAccordion(readyPlans) {
+    const accordion = document.createElement('details');
+    accordion.className = 'instances-accordion';
+
+    const summary = document.createElement('summary');
+    summary.textContent = `Ready instances (${readyPlans.length})`;
+    accordion.appendChild(summary);
+
+    const list = document.createElement('div');
+    list.className = 'instance-list';
+
+    for (const plan of readyPlans) {
+      const button = document.createElement('button');
+      button.className = 'instance-link';
+      button.dataset.instanceId = plan.instanceId;
+
+      const name = document.createElement('div');
+      name.className = 'instance-link-name';
+      name.textContent = plan.instanceName || 'Unnamed instance';
+
+      const meta = document.createElement('div');
+      meta.className = 'instance-link-meta';
+      const oldColor = formatOptionalValue(plan.oldColorValue);
+      const targetMode = plan.targetModeName || 'Default';
+      meta.textContent = `${plan.pageName || 'Unknown page'} · ${plan.parentName || 'Unknown parent'} · ${oldColor} → ${targetMode}`;
+
+      button.append(name, meta);
+      button.onclick = () => {
+        send({ type: 'focus-node', nodeId: plan.instanceId });
+      };
+
+      list.appendChild(button);
+    }
+
+    accordion.appendChild(list);
+    activeDetails.appendChild(accordion);
   }
 
   function formatOptionalValue(value) {
