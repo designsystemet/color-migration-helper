@@ -160,6 +160,20 @@
     grid-template-columns: 1fr;
   }
 
+  .checkbox-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    user-select: none;
+    color: var(--figma-color-text, #1e1e1e);
+    line-height: 1.35;
+  }
+
+  .checkbox-row input[type='checkbox'] {
+    margin: 0;
+  }
+
   label {
     display: grid;
     gap: 4px;
@@ -308,6 +322,24 @@
     to {
       transform: rotate(360deg);
     }
+  }
+
+  .debug-output {
+    width: 100%;
+    box-sizing: border-box;
+    margin-top: 10px;
+    min-height: 160px;
+    max-height: 280px;
+    resize: vertical;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 11px;
+    line-height: 1.4;
+    padding: 8px;
+    border: 1px solid var(--figma-color-border, #d9d9d9);
+    border-radius: 4px;
+    background: var(--figma-color-bg-secondary, #f7f7f7);
+    color: var(--figma-color-text, #1e1e1e);
+    white-space: pre;
   }
 </style>
 
@@ -466,10 +498,27 @@
             <select id="librarySupportMode"></select>
           </label>
         </div>
+        <div style="margin-top: 10px;">
+          <label class="checkbox-row">
+            <input type="checkbox" id="rebindLegacyVariables">
+            <span>Rebind legacy color variables (experimental)</span>
+          </label>
+        </div>
         <div class="toolbar" style="margin-top: 10px;">
           <button class="primary" id="applyLibrary" disabled>Update instances</button>
         </div>
       </section>
+    </section>
+
+    <section class="panel is-hidden" id="debugPanel">
+      <div class="panel-title">Debug: inspect bindings</div>
+      <p>Select one or more nodes (typically a migrated instance), then click Inspect. Dumps all bound color variables on fills and strokes, with resolved collection names.</p>
+      <div class="toolbar" style="margin-top: 10px;">
+        <button id="inspectBindings">Inspect bindings</button>
+        <button id="copyBindingsOutput" disabled>Copy JSON</button>
+      </div>
+      <div class="summary-line is-hidden" id="bindingsSummary" style="margin-top: 10px;"></div>
+      <textarea class="debug-output is-hidden" id="bindingsOutput" readonly spellcheck="false"></textarea>
     </section>
 
   </main>
@@ -515,6 +564,12 @@
   const libraryDetails = document.getElementById('libraryDetails');
   const librarySupportChoiceRow = document.getElementById('librarySupportChoiceRow');
   const librarySupportModeSelect = document.getElementById('librarySupportMode');
+  const rebindLegacyCheckbox = document.getElementById('rebindLegacyVariables');
+  const inspectBindingsButton = document.getElementById('inspectBindings');
+  const copyBindingsButton = document.getElementById('copyBindingsOutput');
+  const bindingsSummary = document.getElementById('bindingsSummary');
+  const bindingsOutput = document.getElementById('bindingsOutput');
+  const debugPanel = document.getElementById('debugPanel');
   const busyOverlay = document.getElementById('busyOverlay');
   const busyText = document.getElementById('busyText');
   let activeSummary = primeSummary;
@@ -551,6 +606,10 @@
       view.classList.toggle('view-active', view.id === `view-${viewName}`);
     }
 
+    // The debug panel is a developer tool; hide it on the landing screen
+    // so the two workflow cards stand alone.
+    debugPanel.classList.toggle('is-hidden', viewName === 'landing');
+
     if (viewName === 'library') {
       resetLibraryFlowState();
       send('check-prime-status');
@@ -582,6 +641,8 @@
     libraryFixScopeSelect.disabled = isBusy;
     scanLibraryButton.disabled = isBusy;
     applyLibraryButton.disabled = isBusy || !applyLibraryButton.dataset.ready;
+    rebindLegacyCheckbox.disabled = isBusy;
+    inspectBindingsButton.disabled = isBusy;
     busyOverlay.classList.toggle('active', isBusy);
     if (message) {
       busyText.textContent = message;
@@ -686,6 +747,12 @@
     if (payload.operation === 'check-prime-status') {
       const details = payload.details || {};
       setPrimeState(details.state || 'needs');
+      setBusy(false);
+      return;
+    }
+
+    if (payload.operation === 'inspect-bindings') {
+      renderBindingsResult(payload);
       setBusy(false);
       return;
     }
@@ -1123,7 +1190,41 @@
     send({
       type: 'apply-library-stuck-instances',
       supportFallbackModeId,
+      rebindLegacyVariables: rebindLegacyCheckbox.checked,
     });
+  };
+
+  function renderBindingsResult(payload) {
+    const details = payload.details || {};
+    const json = JSON.stringify(details, null, 2);
+    bindingsOutput.value = json;
+    bindingsOutput.classList.remove('is-hidden');
+    bindingsSummary.textContent = payload.message || '';
+    bindingsSummary.classList.remove('is-hidden');
+    copyBindingsButton.disabled = !json;
+  }
+
+  inspectBindingsButton.onclick = () => {
+    setBusy(true, 'Inspecting bindings...');
+    bindingsSummary.textContent = 'Inspecting bindings...';
+    bindingsSummary.classList.remove('is-hidden');
+    send('inspect-bindings');
+  };
+
+  copyBindingsButton.onclick = () => {
+    bindingsOutput.focus();
+    bindingsOutput.select();
+    let copied = false;
+    try {
+      copied = document.execCommand('copy');
+    } catch (e) {
+      copied = false;
+    }
+    const originalLabel = 'Copy JSON';
+    copyBindingsButton.textContent = copied ? 'Copied!' : 'Press Cmd+C';
+    setTimeout(() => {
+      copyBindingsButton.textContent = originalLabel;
+    }, 1500);
   };
 
   window.onmessage = (event) => {

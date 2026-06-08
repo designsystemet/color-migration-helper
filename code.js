@@ -1609,8 +1609,7 @@ async function scanLibraryStuckInstances(scope) {
         // a severity selector (info / warning / danger / success). Figma's
         // library update path keeps these instances in sync automatically, so
         // we must not include them as migration candidates — otherwise the
-        // variant lookup would strip the severity and swap to the default
-        // (typically info) and clear any explicit mode.
+        // variant lookup would strip the severity and swap to the default.
         if (COLOR_MODE_MIGRATION_COMPONENT_SET_NAMES.some((name) => normalizeToken(name) === normalizeToken(oldComponentSet.name))) {
             continue;
         }
@@ -1786,13 +1785,139 @@ async function scanLibraryStuckInstances(scope) {
         },
     };
 }
-async function applyLibraryStuckInstancePlans(supportFallbackModeId) {
+// Match variable names like "color/main/base-default", "color/support/text-default",
+// "color/neutral/border-default". The capture group is the new flat name we'll
+// look up in the post-migration Color collection.
+const LEGACY_COLOR_VARIABLE_NAME_PATTERN = /^color\/(?:main|support|neutral)\/(.+)$/;
+function stripLegacyColorPrefix(variableName) {
+    const match = variableName.match(LEGACY_COLOR_VARIABLE_NAME_PATTERN);
+    return match ? match[1] : null;
+}
+async function buildNewColorVariableMap(collectionId) {
+    const map = new Map();
+    const collection = await figma.variables.getVariableCollectionByIdAsync(collectionId);
+    if (!collection) {
+        return map;
+    }
+    for (const variableId of collection.variableIds) {
+        const variable = await figma.variables.getVariableByIdAsync(variableId);
+        if (variable) {
+            map.set(normalizeToken(variable.name), variable);
+        }
+    }
+    return map;
+}
+// Walk a subtree (including into nested instances) and replace any
+// fill/stroke boundVariables.color binding that points to a legacy color
+// variable with the matching new Color-collection variable. A binding
+// qualifies as "legacy" if:
+//   - its collection is Main color, Support color, or Neutral color, OR
+//   - its name matches color/(main|support|neutral)/* — catches Semantic-
+//     collection bindings to legacy-named variables (the neutral case).
+async function rebindLegacyColorBindingsInSubtree(node, newColorVariableMap, variableCache, collectionCache) {
+    const stats = { rebound: 0, skipped: 0, failed: 0 };
+    async function evaluatePaints(paints) {
+        let mutated = false;
+        const next = paints.slice();
+        for (let i = 0; i < next.length; i += 1) {
+            const paint = next[i];
+            // Only SolidPaint has boundVariables.color; gradients/images bind
+            // different fields and aren't relevant to color-variable rebinding.
+            if (!paint || paint.type !== 'SOLID') {
+                continue;
+            }
+            const variableId = paint.boundVariables && paint.boundVariables.color
+                ? paint.boundVariables.color.id
+                : null;
+            if (!variableId) {
+                continue;
+            }
+            let variable = variableCache.get(variableId);
+            if (variable === undefined) {
+                try {
+                    variable = await figma.variables.getVariableByIdAsync(variableId);
+                }
+                catch (_a) {
+                    variable = null;
+                }
+                variableCache.set(variableId, variable === undefined ? null : variable);
+            }
+            if (!variable) {
+                continue;
+            }
+            let collection = collectionCache.get(variable.variableCollectionId);
+            if (collection === undefined) {
+                try {
+                    collection = await figma.variables.getVariableCollectionByIdAsync(variable.variableCollectionId);
+                }
+                catch (_b) {
+                    collection = null;
+                }
+                collectionCache.set(variable.variableCollectionId, collection === undefined ? null : collection);
+            }
+            const isLegacyCollection = collection
+                ? LEGACY_COLOR_COLLECTION_NAMES.indexOf(collection.name) !== -1
+                : false;
+            const strippedName = stripLegacyColorPrefix(variable.name);
+            if (!isLegacyCollection && strippedName === null) {
+                continue;
+            }
+            const lookupName = strippedName !== null ? strippedName : variable.name;
+            const newVariable = newColorVariableMap.get(normalizeToken(lookupName));
+            if (!newVariable) {
+                stats.skipped += 1;
+                continue;
+            }
+            try {
+                next[i] = figma.variables.setBoundVariableForPaint(paint, 'color', newVariable);
+                mutated = true;
+                stats.rebound += 1;
+            }
+            catch (_c) {
+                stats.failed += 1;
+            }
+        }
+        return mutated ? next : null;
+    }
+    if ('fills' in node && Array.isArray(node.fills)) {
+        const updated = await evaluatePaints(node.fills);
+        if (updated) {
+            node.fills = updated;
+        }
+    }
+    if ('strokes' in node && Array.isArray(node.strokes)) {
+        const updated = await evaluatePaints(node.strokes);
+        if (updated) {
+            node.strokes = updated;
+        }
+    }
+    if ('children' in node && Array.isArray(node.children)) {
+        for (const child of node.children) {
+            const childStats = await rebindLegacyColorBindingsInSubtree(child, newColorVariableMap, variableCache, collectionCache);
+            stats.rebound += childStats.rebound;
+            stats.skipped += childStats.skipped;
+            stats.failed += childStats.failed;
+        }
+    }
+    return stats;
+}
+async function applyLibraryStuckInstancePlans(supportFallbackModeId, rebindLegacyVariables) {
     const operation = 'apply-library-stuck-instances';
     const plans = pendingLibraryStuckInstancePlans;
     let fixedCount = 0;
     let failedCount = 0;
+    let totalRebound = 0;
+    let totalRebindSkipped = 0;
+    let totalRebindFailed = 0;
     const failures = [];
     const applicablePlans = plans.filter((p) => p.status !== 'blocked');
+    // Pre-build the name→variable map for the new Color collection so we only
+    // do the variableIds walk once across all instances. Keyed by the
+    // collection ID found during scan — assumes all plans share the same
+    // target Color collection (true for a single-library migration).
+    const colorVariableMaps = new Map();
+    const rebindVariableCache = new Map();
+    const rebindCollectionCache = new Map();
     for (let index = 0; index < applicablePlans.length; index += 1) {
         const plan = applicablePlans[index];
         try {
@@ -1829,6 +1954,17 @@ async function applyLibraryStuckInstancePlans(supportFallbackModeId) {
                     instanceNode.setExplicitVariableModeForCollection(colorCollection, effectiveModeId);
                 }
             }
+            if (rebindLegacyVariables && plan.targetColorCollectionId) {
+                let variableMap = colorVariableMaps.get(plan.targetColorCollectionId);
+                if (!variableMap) {
+                    variableMap = await buildNewColorVariableMap(plan.targetColorCollectionId);
+                    colorVariableMaps.set(plan.targetColorCollectionId, variableMap);
+                }
+                const stats = await rebindLegacyColorBindingsInSubtree(instanceNode, variableMap, rebindVariableCache, rebindCollectionCache);
+                totalRebound += stats.rebound;
+                totalRebindSkipped += stats.skipped;
+                totalRebindFailed += stats.failed;
+            }
             fixedCount += 1;
         }
         catch (error) {
@@ -1852,16 +1988,176 @@ async function applyLibraryStuckInstancePlans(supportFallbackModeId) {
         figma.commitUndo();
     }
     pendingLibraryStuckInstancePlans = [];
+    const rebindSuffix = rebindLegacyVariables && totalRebound + totalRebindSkipped + totalRebindFailed > 0
+        ? ` Rebound ${totalRebound} legacy color binding${totalRebound === 1 ? '' : 's'}${totalRebindSkipped > 0 ? `, ${totalRebindSkipped} unmatched` : ''}${totalRebindFailed > 0 ? `, ${totalRebindFailed} failed` : ''}.`
+        : '';
     return {
         createdAt: new Date().toISOString(),
         operation,
         status: failedCount > 0 ? 'error' : 'success',
-        message: `Updated ${fixedCount} instance${fixedCount === 1 ? '' : 's'}${failedCount > 0 ? `, failed ${failedCount}` : ''}.`,
+        message: `Updated ${fixedCount} instance${fixedCount === 1 ? '' : 's'}${failedCount > 0 ? `, failed ${failedCount}` : ''}.${rebindSuffix}`,
         details: {
             fixedCount,
             failedCount,
+            reboundCount: totalRebound,
+            rebindSkippedCount: totalRebindSkipped,
+            rebindFailedCount: totalRebindFailed,
             failures: failures,
         },
+    };
+}
+const INSPECT_BINDINGS_MAX_DEPTH = 6;
+async function inspectBindings() {
+    const operation = 'inspect-bindings';
+    const selection = figma.currentPage.selection;
+    if (selection.length === 0) {
+        return {
+            createdAt: new Date().toISOString(),
+            operation,
+            status: 'noop',
+            message: 'Select one or more nodes first.',
+            details: { nodes: [] },
+        };
+    }
+    // Cache variable lookups per id — many fills/strokes reuse the same handful
+    // of variables and resolving each via the dynamic-page bridge is slow.
+    const variableCache = new Map();
+    async function resolveVariable(variableId) {
+        const cached = variableCache.get(variableId);
+        if (cached) {
+            return cached;
+        }
+        try {
+            const variable = await figma.variables.getVariableByIdAsync(variableId);
+            if (!variable) {
+                const miss = { id: variableId, resolved: false };
+                variableCache.set(variableId, miss);
+                return miss;
+            }
+            const collection = await figma.variables.getVariableCollectionByIdAsync(variable.variableCollectionId);
+            const info = {
+                id: variable.id,
+                name: variable.name,
+                key: variable.key,
+                remote: variable.remote,
+                collectionId: variable.variableCollectionId,
+                collectionName: collection ? collection.name : null,
+                collectionRemote: collection ? collection.remote : null,
+            };
+            variableCache.set(variableId, info);
+            return info;
+        }
+        catch (error) {
+            return { id: variableId, resolved: false, error: error instanceof Error ? error.message : String(error) };
+        }
+    }
+    async function inspectNode(node, depth) {
+        if (depth > INSPECT_BINDINGS_MAX_DEPTH) {
+            return null;
+        }
+        const fillBindings = [];
+        if ('fills' in node && Array.isArray(node.fills)) {
+            for (let index = 0; index < node.fills.length; index += 1) {
+                const fill = node.fills[index];
+                const id = fill && fill.boundVariables && fill.boundVariables.color ? fill.boundVariables.color.id : null;
+                if (id) {
+                    fillBindings.push({
+                        index,
+                        paintType: fill.type,
+                        variable: await resolveVariable(id),
+                    });
+                }
+            }
+        }
+        const strokeBindings = [];
+        if ('strokes' in node && Array.isArray(node.strokes)) {
+            for (let index = 0; index < node.strokes.length; index += 1) {
+                const stroke = node.strokes[index];
+                const id = stroke && stroke.boundVariables && stroke.boundVariables.color ? stroke.boundVariables.color.id : null;
+                if (id) {
+                    strokeBindings.push({
+                        index,
+                        paintType: stroke.type,
+                        variable: await resolveVariable(id),
+                    });
+                }
+            }
+        }
+        const childResults = [];
+        if ('children' in node && Array.isArray(node.children)) {
+            for (const child of node.children) {
+                const result = await inspectNode(child, depth + 1);
+                if (result) {
+                    childResults.push(result);
+                }
+            }
+        }
+        if (fillBindings.length === 0 && strokeBindings.length === 0 && childResults.length === 0) {
+            return null;
+        }
+        return {
+            id: node.id,
+            name: node.name,
+            nodeType: node.type,
+            fills: fillBindings,
+            strokes: strokeBindings,
+            children: childResults,
+        };
+    }
+    const nodes = [];
+    for (const node of selection) {
+        const tree = await inspectNode(node, 0);
+        if (node.type === 'INSTANCE') {
+            const explicitModes = [];
+            const explicit = node.explicitVariableModes || {};
+            for (const collectionId of Object.keys(explicit)) {
+                const modeId = explicit[collectionId];
+                let collectionName = null;
+                let modeName = null;
+                try {
+                    const collection = await figma.variables.getVariableCollectionByIdAsync(collectionId);
+                    if (collection) {
+                        collectionName = collection.name;
+                        const mode = collection.modes.find((m) => m.modeId === modeId);
+                        if (mode) {
+                            modeName = mode.name;
+                        }
+                    }
+                }
+                catch (_a) {
+                    // ignore — keep nulls
+                }
+                explicitModes.push({ collectionId, collectionName, modeId, modeName });
+            }
+            const main = await node.getMainComponentAsync();
+            nodes.push({
+                id: node.id,
+                name: node.name,
+                nodeType: node.type,
+                mainComponentId: main ? main.id : null,
+                mainComponentName: main ? main.name : null,
+                mainComponentRemote: main ? main.remote : null,
+                explicitVariableModes: explicitModes,
+                tree: tree || { id: node.id, name: node.name, nodeType: node.type, fills: [], strokes: [], children: [] },
+            });
+        }
+        else {
+            nodes.push({
+                id: node.id,
+                name: node.name,
+                nodeType: node.type,
+                tree,
+            });
+        }
+    }
+    const dump = { selectionCount: selection.length, nodes };
+    console.log('[Color migration] Bindings inspection:\n' + JSON.stringify(dump, null, 2));
+    return {
+        createdAt: new Date().toISOString(),
+        operation,
+        status: 'success',
+        message: `Inspected ${selection.length} node${selection.length === 1 ? '' : 's'}. JSON shown below and logged to plugin console.`,
+        details: dump,
     };
 }
 async function runOperation(operation, callback) {
@@ -1904,7 +2200,11 @@ figma.ui.onmessage = async (msg) => {
         return;
     }
     if (msg.type === 'apply-library-stuck-instances') {
-        await runOperation('apply-library-stuck-instances', () => applyLibraryStuckInstancePlans(msg.supportFallbackModeId));
+        await runOperation('apply-library-stuck-instances', () => applyLibraryStuckInstancePlans(msg.supportFallbackModeId, msg.rebindLegacyVariables));
+        return;
+    }
+    if (msg.type === 'inspect-bindings') {
+        await runOperation('inspect-bindings', inspectBindings);
         return;
     }
     if (msg.type === 'focus-node') {
