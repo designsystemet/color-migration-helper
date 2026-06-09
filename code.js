@@ -1722,6 +1722,13 @@ async function scanLibraryStuckInstances(scope) {
         else if (normalizeToken(candidate.colorValue) === 'main') {
             desiredModeName = null;
         }
+        else if (SEMANTIC_COLOR_GROUPS.includes(normalizeToken(candidate.colorValue))) {
+            // info/warning/danger/success used to be selected by the color variant;
+            // post-migration they resolve through a same-named mode in the new Color
+            // collection. Mirror findTargetMode/getColorModeForComponent so a stuck
+            // instance (e.g. a color=danger button) gets its severity mode set.
+            desiredModeName = candidate.colorValue;
+        }
         else if (normalizeToken(candidate.colorValue) === 'support') {
             // Pre-migration the library exposed a separate "Support color"
             // collection for picking which brand-specific color the variant

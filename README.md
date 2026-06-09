@@ -53,6 +53,7 @@ Use this in a sketch file after the library team has migrated and republished th
 - Sets the appropriate color mode in the new `Color` collection:
   - If the instance had an explicit mode override in a legacy color collection (`Main color`, `Support color`): preserves the mode by matching its name in the new collection (e.g. `brand2` → `brand2`).
   - If `color=neutral` with no override: sets the `neutral` mode.
+  - If `color` is a semantic group (`info`, `warning`, `danger`, `success`): sets the same-named mode in the new collection (e.g. `danger` → `danger`). Flagged for review if that mode doesn't exist.
   - If `color=support` with no override: prompts for a fallback mode (the dropdown is shown only when such instances are found).
   - If `color=main` with no override: leaves the mode unset, letting the collection's default apply.
 - Clears any explicit override in the legacy color collection so the (soon orphaned) reference is dropped.
