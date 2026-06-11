@@ -641,6 +641,9 @@ async function scanUnsupportedVariants() {
     const plans = [];
     const skippedComponentSets = [];
     const colorModeMigrationComponentSetIds = [];
+    // Component sets Figma reports as being in an error state — tracked
+    // separately so the scan summary can name them for the user to fix.
+    const errorComponentSetNames = [];
     for (let index = 0; index < componentSets.length; index += 1) {
         const componentSet = componentSets[index];
         const isColorModeMigrationComponentSet = COLOR_MODE_MIGRATION_COMPONENT_SET_NAMES.some((name) => normalizeToken(name) === normalizeToken(componentSet.name));
@@ -656,7 +659,24 @@ async function scanUnsupportedVariants() {
             continue;
         }
         const children = componentSet.children.filter((child) => child.type === 'COMPONENT');
-        const hasColorProperty = children.some((child) => getColorVariantPropertyKey(child) !== null);
+        // A component set in a Figma error state (e.g. conflicting/duplicate
+        // variant combinations) throws on any variantProperties access with
+        // "Component set for node has existing errors". Reading it here would
+        // otherwise abort the entire scan, so isolate the failure to this one set:
+        // record it as skipped and move on.
+        let hasColorProperty;
+        try {
+            hasColorProperty = children.some((child) => getColorVariantPropertyKey(child) !== null);
+        }
+        catch (_a) {
+            errorComponentSetNames.push(componentSet.name);
+            skippedComponentSets.push({
+                id: componentSet.id,
+                name: componentSet.name,
+                reason: 'Component set has existing errors in Figma (e.g. conflicting variants) — fix it and rescan.',
+            });
+            continue;
+        }
         if (hasColorProperty) {
             const plan = {
                 componentSetId: componentSet.id,
@@ -737,6 +757,8 @@ async function scanUnsupportedVariants() {
                 scannedComponentSetCount: componentSets.length,
                 skippedComponentSets,
                 colorModeMigrationCount,
+                errorComponentSetCount: errorComponentSetNames.length,
+                errorComponentSetNames,
                 unsupportedColors: UNSUPPORTED_COLORS,
                 plans,
             },
@@ -752,6 +774,8 @@ async function scanUnsupportedVariants() {
             affectedComponentSetCount: plans.length,
             skippedComponentSets,
             colorModeMigrationCount,
+            errorComponentSetCount: errorComponentSetNames.length,
+            errorComponentSetNames,
             removeCount,
             renameCount,
             skippedRenameCount,

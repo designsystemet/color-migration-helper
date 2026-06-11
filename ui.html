@@ -1085,13 +1085,26 @@
   function getResultSummary(payload) {
     const details = payload.details || {};
 
+    // On error, show the actual message instead of an operation-specific
+    // summary. The per-operation summaries below only read success-shaped
+    // detail fields, so an error payload would otherwise render as a
+    // misleading "Scanned 0 ..." line.
+    if (payload.status === 'error') {
+      return payload.message || 'Something went wrong.';
+    }
+
     if (payload.operation === 'prime-variables') {
       return `Updated ${details.renamedVariableCount || 0} variables.`;
     }
 
     if (payload.operation === 'scan-unsupported-variants') {
       const changeCount = (details.removeCount || 0) + (details.renameCount || 0) + (details.colorModeMigrationCount || 0);
-      return `Scanned ${details.scannedComponentSetCount || 0} component sets. Found ${changeCount} change${changeCount === 1 ? '' : 's'} to apply.`;
+      let summary = `Scanned ${details.scannedComponentSetCount || 0} component sets. Found ${changeCount} change${changeCount === 1 ? '' : 's'} to apply.`;
+      const errorNames = details.errorComponentSetNames || [];
+      if (errorNames.length > 0) {
+        summary += ` ⚠ ${errorNames.length} component set${errorNames.length === 1 ? '' : 's'} ${errorNames.length === 1 ? 'has' : 'have'} existing errors in Figma and ${errorNames.length === 1 ? 'was' : 'were'} skipped: ${errorNames.join(', ')}. Fix the variant conflicts and rescan.`;
+      }
+      return summary;
     }
 
     if (payload.operation === 'apply-unsupported-variants') {
