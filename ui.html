@@ -136,12 +136,90 @@
   }
 
   .is-hidden {
-    display: none;
+    /* Utility class must beat element rules that also set display (e.g.
+       .toolbar { display: flex }), which would otherwise win on source order. */
+    display: none !important;
   }
 
   .panel-title {
     margin-bottom: 6px;
     font-weight: 650;
+  }
+
+  /* Status card — colored frame + icon used to make a step's state
+     unmistakable at a glance (e.g. the Prepare step). */
+  .status-card {
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+    border: 1px solid var(--figma-color-border, #e5e5e5);
+    border-radius: 6px;
+    padding: 12px;
+  }
+
+  .status-card .status-icon {
+    flex: 0 0 auto;
+    width: 16px;
+    height: 16px;
+    margin-top: 1px;
+    color: var(--figma-color-icon-secondary, #6b6b6b);
+  }
+
+  .status-card .status-icon svg {
+    width: 100%;
+    height: 100%;
+    display: block;
+  }
+
+  .status-card .status-body {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .status-card .status-text {
+    margin: 0;
+  }
+
+  .status-card .status-note {
+    margin: 4px 0 0;
+    font-size: 11px;
+    color: var(--figma-color-text-secondary, #6b6b6b);
+  }
+
+  .status-success {
+    border-color: var(--figma-color-icon-success, #14ae5c);
+    background: var(--figma-color-bg-success-tertiary, rgba(20, 174, 92, 0.08));
+  }
+  .status-success .status-icon {
+    color: var(--figma-color-icon-success, #14ae5c);
+  }
+
+  .status-warning {
+    border-color: var(--figma-color-icon-warning, #e5a800);
+    background: var(--figma-color-bg-warning-tertiary, rgba(229, 168, 0, 0.1));
+  }
+  .status-warning .status-icon {
+    color: var(--figma-color-icon-warning, #e5a800);
+  }
+
+  .status-error {
+    border-color: var(--figma-color-icon-danger, #e03e3e);
+    background: var(--figma-color-bg-danger-tertiary, rgba(224, 62, 62, 0.08));
+  }
+  .status-error .status-icon {
+    color: var(--figma-color-icon-danger, #e03e3e);
+  }
+
+  .status-info {
+    border-color: var(--figma-color-icon-brand, #0d99ff);
+    background: var(--figma-color-bg-brand-tertiary, rgba(13, 153, 255, 0.08));
+  }
+  .status-info .status-icon {
+    color: var(--figma-color-icon-brand, #0d99ff);
+  }
+
+  .status-neutral {
+    border-left-width: 1px;
   }
 
   .toolbar {
@@ -368,29 +446,16 @@
       </div>
 
       <section class="step active" id="step-prime" role="tabpanel" aria-labelledby="tab-prime" tabindex="0">
-        <section class="panel">
-          <div class="panel-title">Prepare variables</div>
-          <div class="prime-state" id="primeStateChecking">
-            <p>Checking variable state...</p>
-          </div>
-          <div class="prime-state is-hidden" id="primeStateNeeds">
-            <p>Rename the Main color collection to Color and remove color/main/ from variable names.</p>
-            <div class="toolbar" style="margin-top: 10px;">
+        <div class="status-card status-neutral" id="primeStatus">
+          <span class="status-icon is-hidden" id="primeIcon" aria-hidden="true"></span>
+          <div class="status-body">
+            <p class="status-text" id="primeStatusText">Checking variable state...</p>
+            <p class="status-note is-hidden" id="primeNote"></p>
+            <div class="toolbar is-hidden" id="primeActions" style="margin-top: 10px;">
               <button class="primary" id="prime">Prepare variables</button>
             </div>
           </div>
-          <div class="prime-state is-hidden" id="primeStateReady">
-            <p>Variables are correct and ready to be updated with Token Studio.</p>
-          </div>
-          <div class="prime-state is-hidden" id="primeStateNotLibrary">
-            <p>This file does not appear to be a Core UI Kit library. Open the library file to run these steps.</p>
-          </div>
-        </section>
-        <section class="panel is-hidden" id="primeResultPanel">
-          <div class="panel-title">Result</div>
-          <div class="summary-line" id="primeSummary"></div>
-          <div class="details-list" id="primeDetails"></div>
-        </section>
+        </div>
       </section>
 
       <section class="step" id="step-variants" role="tabpanel" aria-labelledby="tab-variants" tabindex="0">
@@ -509,19 +574,17 @@
   const segmentButtons = Array.from(document.querySelectorAll('.segment'));
   const stepPanels = Array.from(document.querySelectorAll('.step'));
   const primeButton = document.getElementById('prime');
-  const primeStateChecking = document.getElementById('primeStateChecking');
-  const primeStateNeeds = document.getElementById('primeStateNeeds');
-  const primeStateReady = document.getElementById('primeStateReady');
-  const primeStateNotLibrary = document.getElementById('primeStateNotLibrary');
+  const primeStatus = document.getElementById('primeStatus');
+  const primeIcon = document.getElementById('primeIcon');
+  const primeStatusText = document.getElementById('primeStatusText');
+  const primeNote = document.getElementById('primeNote');
+  const primeActions = document.getElementById('primeActions');
   const scanVariantsButton = document.getElementById('scanVariants');
   const applyVariantsButton = document.getElementById('applyVariants');
   const fixScopeSelect = document.getElementById('fixScope');
   const supportModeSelect = document.getElementById('supportMode');
   const scanMissingButton = document.getElementById('scanMissing');
   const applyMissingButton = document.getElementById('applyMissing');
-  const primeResultPanel = document.getElementById('primeResultPanel');
-  const primeSummary = document.getElementById('primeSummary');
-  const primeDetails = document.getElementById('primeDetails');
   const variantsResultPanel = document.getElementById('variantsResultPanel');
   const variantsSummary = document.getElementById('variantsSummary');
   const variantsDetails = document.getElementById('variantsDetails');
@@ -539,22 +602,61 @@
   const rebindLegacyCheckbox = document.getElementById('rebindLegacyVariables');
   const busyOverlay = document.getElementById('busyOverlay');
   const busyText = document.getElementById('busyText');
-  let activeSummary = primeSummary;
-  let activeDetails = primeDetails;
+  let activeSummary = null;
+  let activeDetails = null;
+  // Carries the "Renamed N variables" line from a successful prepare run into
+  // the green ready state shown after the follow-up re-check.
+  let primeReadyNote = '';
 
   function send(message) {
     parent.postMessage({ pluginMessage: typeof message === 'string' ? { type: message } : message }, '*');
   }
 
-  function setPrimeState(state) {
-    primeStateChecking.classList.toggle('is-hidden', state !== 'checking');
-    primeStateNeeds.classList.toggle('is-hidden', state !== 'needs');
-    primeStateReady.classList.toggle('is-hidden', state !== 'ready');
-    primeStateNotLibrary.classList.toggle('is-hidden', state !== 'not-library');
+  const PRIME_ICONS = {
+    success: '<svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><circle cx="8" cy="8" r="6.5" stroke="currentColor" stroke-width="1.5"/><path d="M5 8.2l2 2 4-4.4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    warning: '<svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M8 2l6.2 11H1.8L8 2z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M8 6.5v3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><circle cx="8" cy="11.4" r="0.9" fill="currentColor"/></svg>',
+    error: '<svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><circle cx="8" cy="8" r="6.5" stroke="currentColor" stroke-width="1.5"/><path d="M5.5 5.5l5 5M10.5 5.5l-5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>',
+    info: '<svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><circle cx="8" cy="8" r="6.5" stroke="currentColor" stroke-width="1.5"/><path d="M8 7.2v4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><circle cx="8" cy="4.7" r="0.9" fill="currentColor"/></svg>',
+  };
+
+  // Each prime state maps to a colored card, an icon, default copy, and
+  // whether the action button is shown.
+  const PRIME_STATES = {
+    checking: { cls: 'status-neutral', icon: null, text: 'Checking variable state...', button: false },
+    needs: { cls: 'status-warning', icon: 'warning', text: 'Rename the Main color collection to Color and remove color/main/ from variable names.', button: true },
+    ready: { cls: 'status-success', icon: 'success', text: 'Variables are correct and ready to be updated with Token Studio.', button: false },
+    'not-library': { cls: 'status-info', icon: 'info', text: 'This file does not appear to be a Core UI Kit library. Open the library file to run these steps.', button: false },
+    error: { cls: 'status-error', icon: 'error', text: 'Could not prepare variables.', button: true },
+  };
+
+  function setPrimeState(state, message) {
+    const config = PRIME_STATES[state] || PRIME_STATES.needs;
+    primeStatus.className = 'status-card ' + config.cls;
+
+    if (config.icon) {
+      primeIcon.innerHTML = PRIME_ICONS[config.icon];
+      primeIcon.classList.remove('is-hidden');
+    } else {
+      primeIcon.innerHTML = '';
+      primeIcon.classList.add('is-hidden');
+    }
+
+    primeStatusText.textContent = state === 'error' && message ? message : config.text;
+
+    if (state === 'ready' && primeReadyNote) {
+      primeNote.textContent = primeReadyNote;
+      primeNote.classList.remove('is-hidden');
+    } else {
+      primeNote.textContent = '';
+      primeNote.classList.add('is-hidden');
+    }
+    // The note only belongs to the ready state right after a prepare run.
+    primeReadyNote = '';
+
+    primeActions.classList.toggle('is-hidden', !config.button);
   }
 
   function resetLibraryFlowState() {
-    primeResultPanel.classList.add('is-hidden');
     variantsResultPanel.classList.add('is-hidden');
     instancesResultPanel.classList.add('is-hidden');
     resetVariantButtons();
@@ -695,7 +797,9 @@
       ? ` (${payload.processed}/${payload.total})`
       : '';
     const message = `${payload.message}${progress}`;
-    activeSummary.textContent = message;
+    if (activeSummary) {
+      activeSummary.textContent = message;
+    }
     busyText.textContent = message;
   }
 
@@ -710,6 +814,22 @@
       const details = payload.details || {};
       setPrimeState(details.state || 'needs');
       setBusy(false);
+      return;
+    }
+
+    if (payload.operation === 'prime-variables') {
+      if (payload.status === 'error') {
+        setPrimeState('error', payload.message);
+        setBusy(false);
+      } else {
+        // Re-derive the real variable state from the file rather than assuming
+        // success, and carry the count into the resulting green ready card.
+        // Set the note after setPrimeState, which clears it on every call.
+        const renamed = (payload.details || {}).renamedVariableCount || 0;
+        setPrimeState('checking');
+        primeReadyNote = `Renamed ${renamed} variable${renamed === 1 ? '' : 's'}.`;
+        send('check-prime-status');
+      }
       return;
     }
 
@@ -735,11 +855,6 @@
   }
 
   function setResultTargetForOperation(operation) {
-    if (operation === 'prime-variables') {
-      setActiveResult(primeResultPanel, primeSummary, primeDetails);
-      return;
-    }
-
     if (operation === 'scan-unsupported-variants' || operation === 'apply-unsupported-variants') {
       setActiveResult(variantsResultPanel, variantsSummary, variantsDetails);
       return;
@@ -1049,10 +1164,6 @@
       return payload.message || 'Something went wrong.';
     }
 
-    if (payload.operation === 'prime-variables') {
-      return `Updated ${details.renamedVariableCount || 0} variables.`;
-    }
-
     if (payload.operation === 'scan-unsupported-variants') {
       const changeCount = (details.removeCount || 0) + (details.renameCount || 0) + (details.colorModeMigrationCount || 0);
       let summary = `Scanned ${details.scannedComponentSetCount || 0} component sets. Found ${changeCount} change${changeCount === 1 ? '' : 's'} to apply.`;
@@ -1113,7 +1224,7 @@
   }
 
   primeButton.onclick = () => {
-    startOperation('Preparing variables...', primeResultPanel, primeSummary, primeDetails);
+    setBusy(true, 'Preparing variables...');
     send('prime-variables');
   };
 
