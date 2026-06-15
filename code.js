@@ -625,6 +625,40 @@ async function loadColorModes() {
         },
     };
 }
+// Alert / ValidationMessage keep their color variants but have their paints
+// moved from Semantic color variables (color/info|warning|danger|success/…) to
+// flat Color variables + modes. A set still "needs migration" only while some
+// paint is still bound to a semantic variable; once migrated none remain, so we
+// can stop counting it on every re-scan.
+async function componentSetNeedsColorModeMigration(componentSet) {
+    for (const child of componentSet.children) {
+        if (child.type !== 'COMPONENT') {
+            continue;
+        }
+        const hasSemanticBinding = await visitFirstBoundColor(child, 0, async (hit) => {
+            try {
+                const variable = await figma.variables.getVariableByIdAsync(hit.variableId);
+                if (!variable) {
+                    return null;
+                }
+                const parts = variable.name.split('/').map((part) => part.trim()).filter(Boolean);
+                if (parts.length >= 3
+                    && normalizeToken(parts[0]) === 'color'
+                    && SEMANTIC_COLOR_GROUPS.includes(normalizeToken(parts[1]))) {
+                    return true;
+                }
+            }
+            catch (_a) {
+                // ignore — treat unresolved bindings as not-semantic
+            }
+            return null;
+        });
+        if (hasSemanticBinding) {
+            return true;
+        }
+    }
+    return false;
+}
 async function scanUnsupportedVariants() {
     const operation = 'scan-unsupported-variants';
     pendingUnsupportedVariantPlans = [];
@@ -650,13 +684,17 @@ async function scanUnsupportedVariants() {
         const isColorModeMigrationComponentSet = COLOR_MODE_MIGRATION_COMPONENT_SET_NAMES.some((name) => normalizeToken(name) === normalizeToken(componentSet.name));
         if (isColorModeMigrationComponentSet) {
             // Alert and ValidationMessage are migrated by rebinding paints instead of
-            // deleting their color variants.
-            colorModeMigrationComponentSetIds.push(componentSet.id);
-            skippedComponentSets.push({
-                id: componentSet.id,
-                name: componentSet.name,
-                reason: 'Handled by color mode migration.',
-            });
+            // deleting their color variants. Only count a set while it still has
+            // semantic-bound paints; once migrated, skip it so re-scans don't keep
+            // reporting it as work to do.
+            if (await componentSetNeedsColorModeMigration(componentSet)) {
+                colorModeMigrationComponentSetIds.push(componentSet.id);
+                skippedComponentSets.push({
+                    id: componentSet.id,
+                    name: componentSet.name,
+                    reason: 'Handled by color mode migration.',
+                });
+            }
             continue;
         }
         const children = componentSet.children.filter((child) => child.type === 'COMPONENT');
