@@ -479,7 +479,7 @@
       <section class="step" id="step-instances" role="tabpanel" aria-labelledby="tab-instances" tabindex="0">
         <section class="panel">
           <div class="panel-title">Update missing instances</div>
-          <p>Find instances that used old color variants and move them to the matching current variant.</p>
+          <p>Find instances that used old color variants and move them to the matching current variant. Also cleans up loose Support color layers (frames, text) in the same scope, using the support mode chosen below.</p>
           <div class="control-row stacked" style="margin-top: 10px;">
             <label>
               Scope
@@ -506,6 +506,7 @@
             <button class="primary" id="applyMissing" disabled>Update instances</button>
           </div>
         </section>
+
       </section>
     </section>
 
@@ -521,7 +522,7 @@
 
       <section class="panel">
         <div class="panel-title">Update sketches that use this library</div>
-        <p>Find instances stuck on the pre-migration library version and update them to the current one. Run this in your sketch file after updating the library.</p>
+        <p>Find instances stuck on the pre-migration library version and update them to the current one. Also cleans up loose Support color layers (frames, text) in the same scope. Run this in your sketch file after updating the library.</p>
         <div class="control-row stacked" style="margin-top: 10px;">
           <label>
             Scope
@@ -556,6 +557,7 @@
           <button class="primary" id="applyLibrary" disabled>Update instances</button>
         </div>
       </section>
+
     </section>
 
   </main>
@@ -871,6 +873,9 @@
   }
 
   function renderDetails(payload) {
+    if (!activeDetails) {
+      return;
+    }
     activeDetails.innerHTML = '';
 
     if (payload.operation === 'scan-unsupported-variants') {
@@ -1153,6 +1158,29 @@
     }
   }
 
+  // Folded-in support cleanup counts, shared by the missing-instance and
+  // library-stuck summaries.
+  function supportLayerScanSuffix(details) {
+    const cleanable = (details.supportLayerReadyCount || 0) + (details.supportLayerFallbackCount || 0);
+    const reviewOnly = (details.supportLayerReviewCount || 0) - (details.supportLayerFallbackCount || 0);
+    if (cleanable > 0) {
+      return ` Plus ${cleanable} support layer${cleanable === 1 ? '' : 's'} to clean up${reviewOnly > 0 ? ` (${reviewOnly} need review)` : ''}.`;
+    }
+    if (reviewOnly > 0) {
+      return ` ${reviewOnly} support layer${reviewOnly === 1 ? '' : 's'} need review.`;
+    }
+    return '';
+  }
+
+  function supportLayerApplySuffix(details) {
+    const layers = details.supportLayerFixedCount || 0;
+    if (layers === 0) {
+      return '';
+    }
+    const bindings = details.supportBindingReboundCount || 0;
+    return ` Cleaned up ${bindings} support binding${bindings === 1 ? '' : 's'} on ${layers} layer${layers === 1 ? '' : 's'}.`;
+  }
+
   function getResultSummary(payload) {
     const details = payload.details || {};
 
@@ -1190,11 +1218,11 @@
     }
 
     if (payload.operation === 'scan-missing-instances') {
-      return `Scanned ${details.scannedInstanceCount || 0} instances. ${details.readyCount || 0} can be updated, and ${details.blockedCount || 0} need review.`;
+      return `Scanned ${details.scannedInstanceCount || 0} instances. ${details.readyCount || 0} can be updated, and ${details.blockedCount || 0} need review.${supportLayerScanSuffix(details)}`;
     }
 
     if (payload.operation === 'apply-missing-instances') {
-      return `Updated ${details.fixedCount || 0} instances. Left color mode unchanged for ${details.skippedModeCount || 0}. ${details.failedCount || 0} update${details.failedCount === 1 ? '' : 's'} failed.`;
+      return `Updated ${details.fixedCount || 0} instances. Left color mode unchanged for ${details.skippedModeCount || 0}. ${details.failedCount || 0} update${details.failedCount === 1 ? '' : 's'} failed.${supportLayerApplySuffix(details)}`;
     }
 
     if (payload.operation === 'scan-library-stuck-instances') {
@@ -1203,13 +1231,13 @@
       const blocked = details.blockedCount || 0;
       const supportFallback = details.supportFallbackCount || 0;
       const supportSuffix = supportFallback > 0
-        ? ` ${supportFallback} support instance${supportFallback === 1 ? '' : 's'} need a fallback mode — pick one below.`
+        ? ` Pick a fallback color below to replace 'support'.`
         : '';
-      return `Scanned ${details.scannedInstanceCount || 0} instances. ${ready} ready, ${review} need review, ${blocked} blocked.${supportSuffix}`;
+      return `Scanned ${details.scannedInstanceCount || 0} instances. ${ready} ready, ${review} need review, ${blocked} blocked.${supportLayerScanSuffix(details)}${supportSuffix}`;
     }
 
     if (payload.operation === 'apply-library-stuck-instances') {
-      return `Updated ${details.fixedCount || 0} instance${details.fixedCount === 1 ? '' : 's'}. ${details.failedCount || 0} update${details.failedCount === 1 ? '' : 's'} failed.`;
+      return `Updated ${details.fixedCount || 0} instance${details.fixedCount === 1 ? '' : 's'}. ${details.failedCount || 0} update${details.failedCount === 1 ? '' : 's'} failed.${supportLayerApplySuffix(details)}`;
     }
 
     return payload.message;
@@ -1251,7 +1279,7 @@
 
   applyMissingButton.onclick = () => {
     startOperation('Updating instances...', instancesResultPanel, instancesSummary, instancesDetails);
-    send('apply-missing-instances');
+    send({ type: 'apply-missing-instances', supportModeId: supportModeSelect.value || null });
   };
 
   scanLibraryButton.onclick = () => {

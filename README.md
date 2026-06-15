@@ -38,8 +38,9 @@ The plugin opens on a landing screen with two workflows:
 - Falls back to a standalone Component with the same name when no matching ComponentSet exists — this is the path for instances that pointed to a component set Step 2 collapsed.
 - Swaps ready instances to the matching current component.
 - Sets the correct color mode on the fixed instance.
-- Lets the user choose which Color mode should replace the old `support` category.
+- Lets the user choose which Color mode should replace the old `support` category — the same choice also drives the folded-in support cleanup (see below).
 - Skips setting explicit `neutral` mode for nested missing instances inside `TableColumn`, because those subcomponents were wired to neutral by mistake and should inherit/default instead.
+- Also runs the [support cleanup](#support-cleanup-folded-into-both-flows) over the same scope.
 
 ### Update sketches
 
@@ -58,6 +59,21 @@ Use this in a sketch file after the library team has migrated and republished th
   - If `color=main` with no override: leaves the mode unset, letting the collection's default apply.
 - Clears any explicit override in the legacy color collection so the (soon orphaned) reference is dropped.
 - Shows scan results grouped by status: a collapsible "Ready instances" accordion (each row selects and zooms to the instance when clicked) and a "Needs review" list for items that can't be migrated cleanly.
+- Also runs the [support cleanup](#support-cleanup-folded-into-both-flows) over the same scope.
+
+### Support cleanup (folded into both flows)
+
+Both **Fix in library** and **Update sketches** also clean up loose `Support color` references that live directly on layers (frames, text, vectors, etc.) rather than on instances — these are not touched by the instance swaps and would otherwise keep pointing at the soon-removed `Support color` collection. It is part of the same scan/apply as the instances (no separate panel), and shares the one support-replacement dropdown so the user only picks a fallback color once.
+
+- Targets only `Support color` bindings. `Main color` is renamed in place (its bindings still resolve) and the `neutral` scale still exists, so main and neutral bindings are intentionally left alone.
+- Runs over the same scope as the instance scan and inspects each layer's own fill and stroke paints. Text color is covered because it lives on the text node's `fills`.
+- Stops at instance boundaries: instance-internal bindings are overrides handled by the instance swap, and descending into every instance file-wide would force Figma to materialize each instance subtree.
+- A binding qualifies when its variable name matches `color/support/*` or it lives in the `Support color` collection. Each is rebound to the same-named variable in the new `Color` collection.
+- Mode handling, to avoid silently changing colors:
+  - Preserves an explicit legacy-collection mode override on the layer by setting the same-named mode in the new `Color` collection, then clearing the legacy override.
+  - Layers whose support binding has no explicit mode use the shared support-replacement choice (the **"Replace 'support' with"** / **"Use this mode for old support variants"** dropdown). Without a choice they are left untouched rather than silently falling back to the default mode.
+- In the **Update sketches** flow the cleanup runs only when the `Color` collection was discovered (i.e. at least one stuck component set was imported); a sketch file with loose support layers but no stuck instances has no way to resolve the new collection.
+- Idempotent: it only rewrites `Support color` bindings, so it is safe to run repeatedly.
 
 ## Development
 

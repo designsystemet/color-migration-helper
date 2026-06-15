@@ -18,7 +18,7 @@ type PluginMessage =
   | { type: 'apply-unsupported-variants' }
   | { type: 'load-color-modes' }
   | { type: 'scan-missing-instances'; scope: FixScope; supportModeId: string | null }
-  | { type: 'apply-missing-instances' }
+  | { type: 'apply-missing-instances'; supportModeId: string | null }
   | { type: 'scan-library-stuck-instances'; scope: FixScope }
   | { type: 'apply-library-stuck-instances'; supportFallbackModeId: string | null; rebindLegacyVariables: boolean }
   | { type: 'focus-node'; nodeId: string };
@@ -124,6 +124,30 @@ type MissingInstancePlan = {
   componentContextSetName?: string;
 };
 
+// A loose color-variable binding on a non-instance node (frame, text, vector,
+// etc.) that still points at a legacy color collection and should be rebound
+// to the post-migration Color collection.
+type LegacyColorRebindPlan = {
+  nodeId: string;
+  nodeName: string;
+  nodeType: string;
+  pageName: string | null;
+  bindingCount: number;
+  matchedCount: number;
+  unmatchedNames: string[];
+  legacyModeCollectionId: string | null;
+  legacyModeCollectionName: string | null;
+  legacyModeName: string | null;
+  targetColorCollectionId: string | null;
+  targetModeId: string | null;
+  targetModeName: string | null;
+  // True for review items that only lack a mode: a user-picked fallback mode
+  // makes them cleanable.
+  needsSupportModeChoice: boolean;
+  status: 'ready' | 'review';
+  reason?: string;
+};
+
 const UNSUPPORTED_COLORS: UnsupportedColor[] = [
   'neutral',
   'support',
@@ -152,6 +176,7 @@ let pendingUnsupportedVariantPlans: ComponentSetRemovalPlan[] = [];
 let pendingColorModeMigrationComponentSetIds: string[] = [];
 let pendingMissingInstancePlans: MissingInstancePlan[] = [];
 let pendingLibraryStuckInstancePlans: LibraryStuckInstancePlan[] = [];
+let pendingLegacyColorRebindPlans: LegacyColorRebindPlan[] = [];
 
 figma.showUI(__html__, { width: 480, height: 460, themeColors: true });
 
@@ -1693,12 +1718,23 @@ async function scanMissingInstances(scope: FixScope, supportModeId: string | nul
   const readyCount = plans.filter((plan) => plan.status === 'ready').length;
   const blockedCount = plans.length - readyCount;
 
-  if (plans.length === 0) {
+  // Support cleanup is folded into this flow: also scan loose Support color
+  // bindings on non-instance layers in the same scope. The support fallback
+  // chosen here applies to both instances and these layers.
+  const loose = await collectLegacyColorRebindPlans(scope, colorCollection);
+  const looseHasWork = loose.readyCount + loose.reviewCount > 0;
+  const looseCleanable = loose.readyCount + loose.supportFallbackCount;
+  const looseNeedsReviewOnly = loose.reviewCount - loose.supportFallbackCount;
+  const looseSuffix = looseHasWork
+    ? ` Plus ${looseCleanable} support layer${looseCleanable === 1 ? '' : 's'} to clean up${looseNeedsReviewOnly > 0 ? ` (${looseNeedsReviewOnly} need review)` : ''}.`
+    : '';
+
+  if (plans.length === 0 && !looseHasWork) {
     return {
       createdAt: new Date().toISOString(),
       operation,
       status: 'noop',
-      message: 'No missing instances found.',
+      message: 'No missing instances or support color layers found.',
       details: {
         scope,
         scannedInstanceCount: instances.length,
@@ -1706,22 +1742,30 @@ async function scanMissingInstances(scope: FixScope, supportModeId: string | nul
     };
   }
 
+  const hasApplicableWork = readyCount > 0 || looseCleanable > 0;
+
   return {
     createdAt: new Date().toISOString(),
     operation,
-    status: readyCount > 0 ? 'preview' : 'error',
-    message: `Found ${plans.length} missing instance${plans.length === 1 ? '' : 's'}: ${readyCount} ready, ${blockedCount} blocked.`,
+    // 'error' only when there are missing instances but nothing can be applied.
+    status: hasApplicableWork || plans.length === 0 ? 'preview' : 'error',
+    message: plans.length === 0
+      ? `No missing instances found.${looseSuffix}`
+      : `Found ${plans.length} missing instance${plans.length === 1 ? '' : 's'}: ${readyCount} ready, ${blockedCount} blocked.${looseSuffix}`,
     details: {
       scope,
       scannedInstanceCount: instances.length,
       readyCount,
       blockedCount,
+      supportLayerReadyCount: loose.readyCount,
+      supportLayerFallbackCount: loose.supportFallbackCount,
+      supportLayerReviewCount: loose.reviewCount,
       plans,
     },
   };
 }
 
-async function applyMissingInstancePlans(): Promise<OperationResultPayload> {
+async function applyMissingInstancePlans(supportModeId: string | null): Promise<OperationResultPayload> {
   const operation = 'apply-missing-instances';
   const colorCollection = await getColorCollection();
 
@@ -1738,7 +1782,7 @@ async function applyMissingInstancePlans(): Promise<OperationResultPayload> {
   }
 
   const plans = pendingMissingInstancePlans.filter((plan) => plan.status === 'ready');
-  if (plans.length === 0) {
+  if (plans.length === 0 && pendingLegacyColorRebindPlans.length === 0) {
     return {
       createdAt: new Date().toISOString(),
       operation,
@@ -1840,19 +1884,30 @@ async function applyMissingInstancePlans(): Promise<OperationResultPayload> {
 
   pendingMissingInstancePlans = [];
 
-  if (fixed.length > 0) {
+  // Folded-in support cleanup: rebind loose Support color layers found during
+  // scan, using the same support fallback mode chosen for the instances.
+  const cleanup = await applyLegacyColorRebindPlans(supportModeId);
+
+  if (fixed.length > 0 || cleanup.reboundCount > 0 || cleanup.modeSetCount > 0) {
     figma.commitUndo();
   }
+
+  const cleanupSuffix = cleanup.nodeFixedCount > 0
+    ? ` Cleaned up ${cleanup.reboundCount} support binding${cleanup.reboundCount === 1 ? '' : 's'} on ${cleanup.nodeFixedCount} layer${cleanup.nodeFixedCount === 1 ? '' : 's'}.`
+    : '';
 
   return {
     createdAt: new Date().toISOString(),
     operation,
-    status: failed.length > 0 ? 'error' : 'success',
-    message: `Fixed ${fixed.length} missing instance${fixed.length === 1 ? '' : 's'}${failed.length > 0 ? `, failed ${failed.length}` : ''}.`,
+    status: failed.length + cleanup.failedCount > 0 ? 'error' : 'success',
+    message: `Fixed ${fixed.length} missing instance${fixed.length === 1 ? '' : 's'}${failed.length > 0 ? `, failed ${failed.length}` : ''}.${cleanupSuffix}`,
     details: {
       fixedCount: fixed.length,
       failedCount: failed.length,
       skippedModeCount,
+      supportLayerFixedCount: cleanup.nodeFixedCount,
+      supportBindingReboundCount: cleanup.reboundCount,
+      supportLayerFailedCount: cleanup.failedCount,
       fixed,
       failed,
     },
@@ -1986,12 +2041,12 @@ function getInstanceColorPropertyValue(instance: InstanceNode): string | null {
   return null;
 }
 
-async function findLegacyColorModeOverride(instance: InstanceNode): Promise<{
+async function findLegacyColorModeOverride(node: SceneNode): Promise<{
   collectionId: string;
   collectionName: string;
   modeName: string;
 } | null> {
-  const explicit = instance.explicitVariableModes || {};
+  const explicit = node.explicitVariableModes || {};
   for (const collectionId of Object.keys(explicit)) {
     const modeId = explicit[collectionId];
     try {
@@ -2213,21 +2268,42 @@ async function scanLibraryStuckInstances(scope: FixScope): Promise<OperationResu
   const readyCount = plans.filter((p) => p.status === 'ready').length;
   const reviewCount = plans.filter((p) => p.status === 'review').length;
   const blockedCount = plans.filter((p) => p.status === 'blocked').length;
-  const supportFallbackCount = plans.filter((p) => p.needsSupportModeChoice).length;
+  const instanceSupportFallbackCount = plans.filter((p) => p.needsSupportModeChoice).length;
+
+  // Fold in loose Support color cleanup over the same scope, using the Color
+  // collection discovered while importing the stuck component sets. Without a
+  // discovered collection (e.g. no stuck instances) we can't resolve targets.
+  let looseScan: LegacyColorRebindScan = {
+    plans: [], scannedNodeCount: 0, readyCount: 0, reviewCount: 0, supportFallbackCount: 0, reboundBindingCount: 0,
+  };
+  if (fallbackColorCollection) {
+    looseScan = await collectLegacyColorRebindPlans(scope, fallbackColorCollection);
+  } else {
+    pendingLegacyColorRebindPlans = [];
+  }
+  const looseCleanable = looseScan.readyCount + looseScan.supportFallbackCount;
+  const looseNeedsReviewOnly = looseScan.reviewCount - looseScan.supportFallbackCount;
+  const looseSuffix = looseScan.readyCount + looseScan.reviewCount > 0
+    ? ` Plus ${looseCleanable} support layer${looseCleanable === 1 ? '' : 's'} to clean up${looseNeedsReviewOnly > 0 ? ` (${looseNeedsReviewOnly} need review)` : ''}.`
+    : '';
+
+  // The fallback dropdown is needed if either instances or loose layers lack a
+  // mode; the single choice is applied to both.
+  const supportFallbackCount = instanceSupportFallbackCount + looseScan.supportFallbackCount;
 
   const availableColorModes: JsonValue[] = fallbackColorCollection
     ? fallbackColorCollection.modes.map((m) => ({ modeId: m.modeId, name: m.name }))
     : [];
 
-  const hasAnyWork = readyCount + reviewCount > 0;
+  const hasAnyWork = readyCount + reviewCount > 0 || looseCleanable > 0;
 
   return {
     createdAt: new Date().toISOString(),
     operation,
     status: hasAnyWork ? 'preview' : 'noop',
     message: hasAnyWork
-      ? `Scanned ${instances.length} instances. ${readyCount} can be updated, ${reviewCount} need review, ${blockedCount} blocked.`
-      : `Scanned ${instances.length} instances. No stuck library instances found.`,
+      ? `Scanned ${instances.length} instances. ${readyCount} can be updated, ${reviewCount} need review, ${blockedCount} blocked.${looseSuffix}`
+      : `Scanned ${instances.length} instances. No stuck library instances or support color layers found.`,
     details: {
       scannedInstanceCount: instances.length,
       candidateCount: candidates.length,
@@ -2235,20 +2311,13 @@ async function scanLibraryStuckInstances(scope: FixScope): Promise<OperationResu
       reviewCount,
       blockedCount,
       supportFallbackCount,
+      supportLayerReadyCount: looseScan.readyCount,
+      supportLayerFallbackCount: looseScan.supportFallbackCount,
+      supportLayerReviewCount: looseScan.reviewCount,
       availableColorModes,
       plans: plans as unknown as JsonValue,
     },
   };
-}
-
-// Match variable names like "color/main/base-default", "color/support/text-default",
-// "color/neutral/border-default". The capture group is the new flat name we'll
-// look up in the post-migration Color collection.
-const LEGACY_COLOR_VARIABLE_NAME_PATTERN = /^color\/(?:main|support|neutral)\/(.+)$/;
-
-function stripLegacyColorPrefix(variableName: string): string | null {
-  const match = variableName.match(LEGACY_COLOR_VARIABLE_NAME_PATTERN);
-  return match ? match[1] : null;
 }
 
 async function buildNewColorVariableMap(collectionId: string): Promise<Map<string, Variable>> {
@@ -2267,6 +2336,98 @@ async function buildNewColorVariableMap(collectionId: string): Promise<Map<strin
 }
 
 type RebindStats = { rebound: number; skipped: number; failed: number };
+
+type LegacyColorCategory = 'main' | 'support' | 'neutral';
+
+// Matches legacy color variable names like "color/main/base-default" and keeps
+// the category group, so support bindings (the ones that depend on a mode) can
+// be told apart. The capture groups are [category, flat-name-for-new-Color].
+const LEGACY_COLOR_VARIABLE_CATEGORY_PATTERN = /^color\/(main|support|neutral)\/(.+)$/;
+
+// Decide whether a bound variable is a legacy color reference, and if so which
+// category it belongs to and the flat name to look up in the new Color
+// collection. Mirrors the qualifies-as-legacy rule used across the migration:
+//   - name matches color/(main|support|neutral)/* (catches Semantic-collection
+//     bindings to legacy-named variables), OR
+//   - it lives in a legacy color collection (Main color / Support color).
+function classifyLegacyColorVariable(
+  variableName: string,
+  collectionName: string | null,
+): { category: LegacyColorCategory; lookupName: string } | null {
+  const match = variableName.match(LEGACY_COLOR_VARIABLE_CATEGORY_PATTERN);
+  if (match) {
+    return { category: match[1] as LegacyColorCategory, lookupName: match[2] };
+  }
+  if (collectionName && LEGACY_COLOR_COLLECTION_NAMES.indexOf(collectionName) !== -1) {
+    return {
+      category: collectionName === 'Support color' ? 'support' : 'main',
+      lookupName: variableName,
+    };
+  }
+  return null;
+}
+
+type LegacyPaintTarget = {
+  oldVariableName: string;
+  category: LegacyColorCategory;
+  newVariable: Variable | null;
+};
+
+// Resolve a single paint to its legacy-rebind target (or null when the paint
+// isn't a legacy color binding). Shared by the subtree rebind, the loose-node
+// scan, and the loose-node apply so detection stays single-sourced.
+async function resolveLegacyColorPaintTarget(
+  paint: Paint,
+  newColorVariableMap: Map<string, Variable>,
+  variableCache: Map<string, Variable | null>,
+  collectionCache: Map<string, VariableCollection | null>,
+): Promise<LegacyPaintTarget | null> {
+  // Only SolidPaint has boundVariables.color; gradients/images bind different
+  // fields and aren't relevant to color-variable rebinding.
+  if (!paint || paint.type !== 'SOLID') {
+    return null;
+  }
+  const variableId = paint.boundVariables && paint.boundVariables.color
+    ? paint.boundVariables.color.id
+    : null;
+  if (!variableId) {
+    return null;
+  }
+
+  let variable = variableCache.get(variableId);
+  if (variable === undefined) {
+    try {
+      variable = await figma.variables.getVariableByIdAsync(variableId);
+    } catch {
+      variable = null;
+    }
+    variableCache.set(variableId, variable === undefined ? null : variable);
+  }
+  if (!variable) {
+    return null;
+  }
+
+  let collection = collectionCache.get(variable.variableCollectionId);
+  if (collection === undefined) {
+    try {
+      collection = await figma.variables.getVariableCollectionByIdAsync(variable.variableCollectionId);
+    } catch {
+      collection = null;
+    }
+    collectionCache.set(variable.variableCollectionId, collection === undefined ? null : collection);
+  }
+
+  const classified = classifyLegacyColorVariable(variable.name, collection ? collection.name : null);
+  if (!classified) {
+    return null;
+  }
+
+  return {
+    oldVariableName: variable.name,
+    category: classified.category,
+    newVariable: newColorVariableMap.get(normalizeToken(classified.lookupName)) || null,
+  };
+}
 
 // Walk a subtree (including into nested instances) and replace any
 // fill/stroke boundVariables.color binding that points to a legacy color
@@ -2287,59 +2448,18 @@ async function rebindLegacyColorBindingsInSubtree(
     let mutated = false;
     const next: Paint[] = paints.slice();
     for (let i = 0; i < next.length; i += 1) {
-      const paint = next[i];
-      // Only SolidPaint has boundVariables.color; gradients/images bind
-      // different fields and aren't relevant to color-variable rebinding.
-      if (!paint || paint.type !== 'SOLID') {
+      const target = await resolveLegacyColorPaintTarget(next[i], newColorVariableMap, variableCache, collectionCache);
+      if (!target) {
         continue;
       }
-      const variableId = paint.boundVariables && paint.boundVariables.color
-        ? paint.boundVariables.color.id
-        : null;
-      if (!variableId) {
-        continue;
-      }
-
-      let variable = variableCache.get(variableId);
-      if (variable === undefined) {
-        try {
-          variable = await figma.variables.getVariableByIdAsync(variableId);
-        } catch {
-          variable = null;
-        }
-        variableCache.set(variableId, variable === undefined ? null : variable);
-      }
-      if (!variable) {
-        continue;
-      }
-
-      let collection = collectionCache.get(variable.variableCollectionId);
-      if (collection === undefined) {
-        try {
-          collection = await figma.variables.getVariableCollectionByIdAsync(variable.variableCollectionId);
-        } catch {
-          collection = null;
-        }
-        collectionCache.set(variable.variableCollectionId, collection === undefined ? null : collection);
-      }
-
-      const isLegacyCollection = collection
-        ? LEGACY_COLOR_COLLECTION_NAMES.indexOf(collection.name) !== -1
-        : false;
-      const strippedName = stripLegacyColorPrefix(variable.name);
-      if (!isLegacyCollection && strippedName === null) {
-        continue;
-      }
-
-      const lookupName = strippedName !== null ? strippedName : variable.name;
-      const newVariable = newColorVariableMap.get(normalizeToken(lookupName));
-      if (!newVariable) {
+      if (!target.newVariable) {
         stats.skipped += 1;
         continue;
       }
 
       try {
-        next[i] = figma.variables.setBoundVariableForPaint(paint, 'color', newVariable);
+        // resolveLegacyColorPaintTarget only returns a target for SolidPaint.
+        next[i] = figma.variables.setBoundVariableForPaint(next[i] as SolidPaint, 'color', target.newVariable);
         mutated = true;
         stats.rebound += 1;
       } catch {
@@ -2475,31 +2595,348 @@ async function applyLibraryStuckInstancePlans(supportFallbackModeId: string | nu
     }
   }
 
-  if (fixedCount > 0) {
+  pendingLibraryStuckInstancePlans = [];
+
+  // Folded-in support cleanup for loose layers found during scan, using the
+  // same support fallback mode chosen for the instances.
+  const cleanup = await applyLegacyColorRebindPlans(supportFallbackModeId);
+
+  if (fixedCount > 0 || cleanup.reboundCount > 0 || cleanup.modeSetCount > 0) {
     figma.commitUndo();
   }
-  pendingLibraryStuckInstancePlans = [];
 
   const rebindSuffix = rebindLegacyVariables && totalRebound + totalRebindSkipped + totalRebindFailed > 0
     ? ` Rebound ${totalRebound} legacy color binding${totalRebound === 1 ? '' : 's'}${totalRebindSkipped > 0 ? `, ${totalRebindSkipped} unmatched` : ''}${totalRebindFailed > 0 ? `, ${totalRebindFailed} failed` : ''}.`
+    : '';
+  const cleanupSuffix = cleanup.nodeFixedCount > 0
+    ? ` Cleaned up ${cleanup.reboundCount} support binding${cleanup.reboundCount === 1 ? '' : 's'} on ${cleanup.nodeFixedCount} layer${cleanup.nodeFixedCount === 1 ? '' : 's'}.`
     : '';
 
   return {
     createdAt: new Date().toISOString(),
     operation,
-    status: failedCount > 0 ? 'error' : 'success',
-    message: `Updated ${fixedCount} instance${fixedCount === 1 ? '' : 's'}${failedCount > 0 ? `, failed ${failedCount}` : ''}.${rebindSuffix}`,
+    status: failedCount + cleanup.failedCount > 0 ? 'error' : 'success',
+    message: `Updated ${fixedCount} instance${fixedCount === 1 ? '' : 's'}${failedCount > 0 ? `, failed ${failedCount}` : ''}.${rebindSuffix}${cleanupSuffix}`,
     details: {
       fixedCount,
       failedCount,
       reboundCount: totalRebound,
       rebindSkippedCount: totalRebindSkipped,
       rebindFailedCount: totalRebindFailed,
+      supportLayerFixedCount: cleanup.nodeFixedCount,
+      supportBindingReboundCount: cleanup.reboundCount,
+      supportLayerFailedCount: cleanup.failedCount,
       failures: failures as unknown as JsonValue,
     },
   };
 }
 
+
+// Top-level scene nodes to walk for a loose-binding sweep. Unlike the instance
+// scans, this returns page-level roots so we can recurse over plain layers.
+async function getRebindScopeRoots(scope: FixScope): Promise<SceneNode[]> {
+  if (scope === 'selection') {
+    return figma.currentPage.selection.slice();
+  }
+  if (scope === 'page') {
+    await figma.currentPage.loadAsync();
+    return [...figma.currentPage.children];
+  }
+  await figma.loadAllPagesAsync();
+  const roots: SceneNode[] = [];
+  for (const page of figma.root.children) {
+    for (const child of page.children) {
+      roots.push(child);
+    }
+  }
+  return roots;
+}
+
+// Collect (without mutating) every Support color binding on a node's own
+// fills/strokes. Does not recurse — the caller walks the tree. Only the
+// Support color collection is being removed in the migration; neutral and
+// main bindings still resolve (main is renamed in place, neutral stays), so
+// they are intentionally left alone.
+async function inspectNodeLegacyBindings(
+  node: SceneNode,
+  newColorVariableMap: Map<string, Variable>,
+  variableCache: Map<string, Variable | null>,
+  collectionCache: Map<string, VariableCollection | null>,
+): Promise<LegacyPaintTarget[]> {
+  const bindings: LegacyPaintTarget[] = [];
+  for (const propertyName of ['fills', 'strokes'] as const) {
+    const paintNode = node as SceneNode & Partial<MinimalFillsMixin & MinimalStrokesMixin>;
+    const paints = paintNode[propertyName];
+    if (!(propertyName in paintNode) || !Array.isArray(paints)) {
+      continue;
+    }
+    for (const paint of paints) {
+      const target = await resolveLegacyColorPaintTarget(paint, newColorVariableMap, variableCache, collectionCache);
+      if (target && target.category === 'support') {
+        bindings.push(target);
+      }
+    }
+  }
+  return bindings;
+}
+
+// Rebind only this node's own Support color fills/strokes (no recursion). Used
+// by the loose-node apply, where the plan already lists each node individually.
+async function rebindLegacyColorPaintsOnNodeOnly(
+  node: SceneNode,
+  newColorVariableMap: Map<string, Variable>,
+  variableCache: Map<string, Variable | null>,
+  collectionCache: Map<string, VariableCollection | null>,
+): Promise<RebindStats> {
+  const stats: RebindStats = { rebound: 0, skipped: 0, failed: 0 };
+  for (const propertyName of ['fills', 'strokes'] as const) {
+    const paintNode = node as SceneNode & Partial<MinimalFillsMixin & MinimalStrokesMixin>;
+    const paints = paintNode[propertyName];
+    if (!(propertyName in paintNode) || !Array.isArray(paints)) {
+      continue;
+    }
+    const next: Paint[] = paints.slice();
+    let mutated = false;
+    for (let i = 0; i < next.length; i += 1) {
+      const target = await resolveLegacyColorPaintTarget(next[i], newColorVariableMap, variableCache, collectionCache);
+      if (!target || target.category !== 'support') {
+        continue;
+      }
+      if (!target.newVariable) {
+        stats.skipped += 1;
+        continue;
+      }
+      try {
+        next[i] = figma.variables.setBoundVariableForPaint(next[i] as SolidPaint, 'color', target.newVariable);
+        mutated = true;
+        stats.rebound += 1;
+      } catch {
+        stats.failed += 1;
+      }
+    }
+    if (mutated) {
+      try {
+        await setPaintsOnNode(node, propertyName, next);
+      } catch {
+        // Figma may reject the write on some nodes; count those we attempted.
+        stats.failed += 1;
+      }
+    }
+  }
+  return stats;
+}
+
+type VariableModeNode = SceneNode & {
+  setExplicitVariableModeForCollection: (collection: VariableCollection, modeId: string) => void;
+  clearExplicitVariableModeForCollection: (collection: VariableCollection) => void;
+};
+
+type LegacyColorRebindScan = {
+  plans: LegacyColorRebindPlan[];
+  scannedNodeCount: number;
+  readyCount: number;
+  reviewCount: number;
+  supportFallbackCount: number;
+  reboundBindingCount: number;
+};
+
+// Walk a scope for loose Support color bindings on non-instance layers and
+// build the rebind plans. Stores them in pendingLegacyColorRebindPlans so a
+// later apply can act on them. Folded into the instance scan flows so support
+// cleanup is part of the same feature rather than a separate panel.
+async function collectLegacyColorRebindPlans(
+  scope: FixScope,
+  colorCollection: VariableCollection,
+): Promise<LegacyColorRebindScan> {
+  pendingLegacyColorRebindPlans = [];
+  // buildNewColorVariableMap walks the collection's variableIds, so it works
+  // for a remote (library) Color collection in sketch files too.
+  const newColorVariableMap = await buildNewColorVariableMap(colorCollection.id);
+  const roots = await getRebindScopeRoots(scope);
+  const variableCache = new Map<string, Variable | null>();
+  const collectionCache = new Map<string, VariableCollection | null>();
+  const plans: LegacyColorRebindPlan[] = [];
+  let scannedNodeCount = 0;
+
+  const visit = async (node: SceneNode): Promise<void> => {
+    // Skip instances entirely: their internal bindings are overrides handled
+    // by the instance flows, and walking into them file-wide would force Figma
+    // to materialize every instance subtree (the perf trap elsewhere avoided).
+    if (node.type === 'INSTANCE') {
+      return;
+    }
+
+    scannedNodeCount += 1;
+    // inspectNodeLegacyBindings only returns Support color bindings.
+    const bindings = await inspectNodeLegacyBindings(node, newColorVariableMap, variableCache, collectionCache);
+    if (bindings.length > 0) {
+      const matched = bindings.filter((binding) => binding.newVariable);
+      const unmatchedNames = bindings.filter((binding) => !binding.newVariable).map((binding) => binding.oldVariableName);
+
+      const legacy = await findLegacyColorModeOverride(node);
+      let targetModeId: string | null = null;
+      let targetModeName: string | null = null;
+      if (legacy) {
+        const mode = colorCollection.modes.find((m) => normalizeToken(m.name) === normalizeToken(legacy.modeName));
+        if (mode) {
+          targetModeId = mode.modeId;
+          targetModeName = mode.name;
+        }
+      }
+
+      let status: 'ready' | 'review' = 'ready';
+      let reason: string | undefined;
+      let needsSupportModeChoice = false;
+      if (matched.length === 0) {
+        status = 'review';
+        reason = 'No matching variables found in the new Color collection.';
+      } else if (!legacy) {
+        // Support color resolved through a mode in the old Support color
+        // collection. With no explicit mode to preserve, we can't infer the
+        // brand — surface it so the user picks a fallback mode in the UI.
+        status = 'review';
+        needsSupportModeChoice = true;
+        reason = 'Support color binding without an explicit mode — pick a fallback color below to clean it up.';
+      }
+
+      plans.push({
+        nodeId: node.id,
+        nodeName: node.name,
+        nodeType: node.type,
+        pageName: getPageName(node),
+        bindingCount: bindings.length,
+        matchedCount: matched.length,
+        unmatchedNames: unmatchedNames.slice(0, 5),
+        legacyModeCollectionId: legacy ? legacy.collectionId : null,
+        legacyModeCollectionName: legacy ? legacy.collectionName : null,
+        legacyModeName: legacy ? legacy.modeName : null,
+        targetColorCollectionId: colorCollection.id,
+        targetModeId,
+        targetModeName,
+        needsSupportModeChoice,
+        status,
+        reason,
+      });
+    }
+
+    if ('children' in node && Array.isArray(node.children)) {
+      for (const child of node.children) {
+        await visit(child);
+      }
+    }
+  };
+
+  for (const root of roots) {
+    await visit(root);
+  }
+
+  pendingLegacyColorRebindPlans = plans;
+
+  return {
+    plans,
+    scannedNodeCount,
+    readyCount: plans.filter((plan) => plan.status === 'ready').length,
+    reviewCount: plans.filter((plan) => plan.status === 'review').length,
+    supportFallbackCount: plans.filter((plan) => plan.needsSupportModeChoice).length,
+    reboundBindingCount: plans
+      .filter((plan) => plan.status === 'ready')
+      .reduce((sum, plan) => sum + plan.matchedCount, 0),
+  };
+}
+
+type LegacyColorRebindResult = {
+  reboundCount: number;
+  skippedCount: number;
+  failedPaintCount: number;
+  modeSetCount: number;
+  nodeFixedCount: number;
+  failedCount: number;
+};
+
+// Apply the pending loose-layer support cleanup using a shared support fallback
+// mode. Self-contained: derives the target Color collection from the plans, so
+// it works for both local (library file) and remote (sketch file) collections.
+// Returns counts so the caller can fold them into its own result.
+async function applyLegacyColorRebindPlans(
+  supportFallbackModeId: string | null,
+): Promise<LegacyColorRebindResult> {
+  const empty: LegacyColorRebindResult = {
+    reboundCount: 0, skippedCount: 0, failedPaintCount: 0, modeSetCount: 0, nodeFixedCount: 0, failedCount: 0,
+  };
+
+  // Ready plans clean up on their own. Support-without-mode plans become
+  // cleanable once the user picks a fallback mode (applied to all of them).
+  const plans = pendingLegacyColorRebindPlans.filter(
+    (plan) => plan.status === 'ready' || (plan.needsSupportModeChoice && supportFallbackModeId),
+  );
+  pendingLegacyColorRebindPlans = [];
+  const collectionId = plans[0] ? plans[0].targetColorCollectionId : null;
+  if (plans.length === 0 || !collectionId) {
+    return empty;
+  }
+
+  const colorCollection = await figma.variables.getVariableCollectionByIdAsync(collectionId);
+  if (!colorCollection) {
+    return empty;
+  }
+
+  const newColorVariableMap = await buildNewColorVariableMap(collectionId);
+  const variableCache = new Map<string, Variable | null>();
+  const collectionCache = new Map<string, VariableCollection | null>();
+
+  let reboundCount = 0;
+  let skippedCount = 0;
+  let failedPaintCount = 0;
+  let modeSetCount = 0;
+  let nodeFixedCount = 0;
+  let failedCount = 0;
+
+  for (const plan of plans) {
+    try {
+      const node = await figma.getNodeByIdAsync(plan.nodeId);
+      if (!node || node.type === 'PAGE' || node.type === 'DOCUMENT') {
+        throw new Error('Layer no longer exists.');
+      }
+      const sceneNode = node as SceneNode;
+
+      const stats = await rebindLegacyColorPaintsOnNodeOnly(sceneNode, newColorVariableMap, variableCache, collectionCache);
+      reboundCount += stats.rebound;
+      skippedCount += stats.skipped;
+      failedPaintCount += stats.failed;
+
+      // Ready plans preserve their own legacy mode; support-without-mode plans
+      // take the user-picked fallback.
+      const effectiveModeId = plan.needsSupportModeChoice ? supportFallbackModeId : plan.targetModeId;
+      if (effectiveModeId && 'setExplicitVariableModeForCollection' in sceneNode) {
+        try {
+          (sceneNode as VariableModeNode).setExplicitVariableModeForCollection(colorCollection, effectiveModeId);
+          modeSetCount += 1;
+        } catch {
+          // best-effort — leave the mode unset if Figma rejects it
+        }
+      }
+
+      if (plan.legacyModeCollectionId && 'clearExplicitVariableModeForCollection' in sceneNode) {
+        try {
+          const legacyCollection = await figma.variables.getVariableCollectionByIdAsync(plan.legacyModeCollectionId);
+          if (legacyCollection) {
+            (sceneNode as VariableModeNode).clearExplicitVariableModeForCollection(legacyCollection);
+          }
+        } catch {
+          // best-effort
+        }
+      }
+
+      if (stats.rebound > 0) {
+        nodeFixedCount += 1;
+      }
+    } catch {
+      failedCount += 1;
+    }
+  }
+
+  return { reboundCount, skippedCount, failedPaintCount, modeSetCount, nodeFixedCount, failedCount };
+}
 
 async function runOperation(operation: Operation, callback: () => Promise<OperationResultPayload>) {
   postToUi({
@@ -2540,7 +2977,7 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
   }
 
   if (msg.type === 'apply-missing-instances') {
-    await runOperation('apply-missing-instances', applyMissingInstancePlans);
+    await runOperation('apply-missing-instances', () => applyMissingInstancePlans(msg.supportModeId));
     return;
   }
 
