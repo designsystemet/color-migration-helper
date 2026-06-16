@@ -496,7 +496,7 @@
       <section class="step" id="step-variants" role="tabpanel" aria-labelledby="tab-variants" tabindex="0">
         <section class="panel">
           <div class="panel-title">Remove variants</div>
-          <p>Remove old color variants, update variant names, and move Alert and ValidationMessage colors to modes.</p>
+          <p>Remove old color variants and update variant names. Alert and ValidationMessage are left unchanged.</p>
           <div class="toolbar" style="margin-top: 10px;">
             <button class="primary" id="scanVariants">Scan variants</button>
           </div>
@@ -814,7 +814,7 @@
       activeDetails.innerHTML = "";
     }
     function activateVariantApply(details) {
-      const total = (details.removeCount || 0) + (details.renameCount || 0) + (details.colorModeMigrationCount || 0);
+      const total = (details.removeCount || 0) + (details.renameCount || 0);
       applyVariantsButton.textContent = total > 0 ? `Remove and update variants (${total})` : "Remove and update variants";
       applyVariantsButton.dataset.ready = total > 0 ? "true" : "";
       applyVariantsButton.disabled = total === 0;
@@ -1188,7 +1188,7 @@
         return payload.message || "Something went wrong.";
       }
       if (payload.operation === "scan-unsupported-variants") {
-        const changeCount = (details.removeCount || 0) + (details.renameCount || 0) + (details.colorModeMigrationCount || 0);
+        const changeCount = (details.removeCount || 0) + (details.renameCount || 0);
         let summary = `Scanned ${details.scannedComponentSetCount || 0} component sets. Found ${changeCount} change${changeCount === 1 ? "" : "s"} to apply.`;
         const errorNames = details.errorComponentSetNames || [];
         if (errorNames.length > 0) {
@@ -1197,12 +1197,9 @@
         return summary;
       }
       if (payload.operation === "apply-unsupported-variants") {
-        const colorModeMigration = details.colorModeMigration || {};
-        const failedPaintWriteCount = colorModeMigration.failedPaintWriteCount || 0;
-        const appliedCount = (details.removedCount || 0) + (details.renamedCount || 0) + (colorModeMigration.migratedPaintCount || 0);
-        const failedCount = (details.failedCount || 0) + failedPaintWriteCount;
-        const paintWriteSuffix = failedPaintWriteCount > 0 ? ` Could not update ${failedPaintWriteCount} color binding${failedPaintWriteCount === 1 ? "" : "s"} inside nested instances.` : "";
-        return `Applied ${appliedCount} change${appliedCount === 1 ? "" : "s"}. ${failedCount} change${failedCount === 1 ? "" : "s"} failed.${paintWriteSuffix}`;
+        const appliedCount = (details.removedCount || 0) + (details.renamedCount || 0);
+        const failedCount = details.failedCount || 0;
+        return `Applied ${appliedCount} change${appliedCount === 1 ? "" : "s"}. ${failedCount} change${failedCount === 1 ? "" : "s"} failed.`;
       }
       if (payload.operation === "load-color-modes") {
         return `Loaded ${(details.modes || []).length} color modes.`;

@@ -8,7 +8,7 @@ The plugin opens on a landing screen with two workflows:
 
 - **Update library** — run in the library file. Three steps, in order:
   1. **Prepare** — renames the `Main color` collection to `Color` and strips the `color/main/` prefix off its variables. The plugin checks the current state on entry and only offers the action when needed.
-  2. **Remove variants** — removes `neutral`/`support` (and any semantic) color variants from component sets and cleans up the variant names. `Alert` and `ValidationMessage` keep their variants but have their paints moved to `Color` + modes.
+  2. **Remove variants** — removes `neutral`/`support` (and any semantic) color variants from component sets and cleans up the variant names. `Alert` and `ValidationMessage` are left untouched — they keep their color variants and hardcoded severity colors.
   3. **Fix in library** — swaps example instances whose old variant was removed to the matching current variant and sets the right color mode.
 
 - **Update sketches** — run in a sketch file after the library has been migrated and republished. Updates instances that are stuck on the pre-migration library version and sets the appropriate color mode.

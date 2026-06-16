@@ -165,7 +165,7 @@ export function createColorController() {
   }
 
   function activateVariantApply(details) {
-    const total = (details.removeCount || 0) + (details.renameCount || 0) + (details.colorModeMigrationCount || 0);
+    const total = (details.removeCount || 0) + (details.renameCount || 0);
     applyVariantsButton.textContent = total > 0 ? `Remove and update variants (${total})` : 'Remove and update variants';
     applyVariantsButton.dataset.ready = total > 0 ? 'true' : '';
     applyVariantsButton.disabled = total === 0;
@@ -629,7 +629,7 @@ export function createColorController() {
     }
 
     if (payload.operation === 'scan-unsupported-variants') {
-      const changeCount = (details.removeCount || 0) + (details.renameCount || 0) + (details.colorModeMigrationCount || 0);
+      const changeCount = (details.removeCount || 0) + (details.renameCount || 0);
       let summary = `Scanned ${details.scannedComponentSetCount || 0} component sets. Found ${changeCount} change${changeCount === 1 ? '' : 's'} to apply.`;
       const errorNames = details.errorComponentSetNames || [];
       if (errorNames.length > 0) {
@@ -639,14 +639,9 @@ export function createColorController() {
     }
 
     if (payload.operation === 'apply-unsupported-variants') {
-      const colorModeMigration = details.colorModeMigration || {};
-      const failedPaintWriteCount = colorModeMigration.failedPaintWriteCount || 0;
-      const appliedCount = (details.removedCount || 0) + (details.renamedCount || 0) + (colorModeMigration.migratedPaintCount || 0);
-      const failedCount = (details.failedCount || 0) + failedPaintWriteCount;
-      const paintWriteSuffix = failedPaintWriteCount > 0
-        ? ` Could not update ${failedPaintWriteCount} color binding${failedPaintWriteCount === 1 ? '' : 's'} inside nested instances.`
-        : '';
-      return `Applied ${appliedCount} change${appliedCount === 1 ? '' : 's'}. ${failedCount} change${failedCount === 1 ? '' : 's'} failed.${paintWriteSuffix}`;
+      const appliedCount = (details.removedCount || 0) + (details.renamedCount || 0);
+      const failedCount = details.failedCount || 0;
+      return `Applied ${appliedCount} change${appliedCount === 1 ? '' : 's'}. ${failedCount} change${failedCount === 1 ? '' : 's'} failed.`;
     }
 
     if (payload.operation === 'load-color-modes') {

@@ -94,11 +94,10 @@
   var LEGACY_COLOR_COLLECTION_NAMES = ["Main color", "Support color"];
   var NEUTRAL_MODE_NAME = "neutral";
   var COLOR_VARIANT_PROPERTY_NAMES = ["color", "color mode"];
-  var COLOR_MODE_MIGRATION_COMPONENT_SET_NAMES = ["Alert", "ValidationMessage"];
+  var PRESERVED_COMPONENT_SET_NAMES = ["Alert", "ValidationMessage"];
   var SEMANTIC_COLOR_GROUPS = ["info", "warning", "danger", "success"];
   var SKIP_MISSING_INSTANCE_MODE_CONTEXTS = ["TableColumn"];
   var pendingUnsupportedVariantPlans = [];
-  var pendingColorModeMigrationComponentSetIds = [];
   var pendingMissingInstancePlans = [];
   var pendingLibraryStuckInstancePlans = [];
   var pendingLegacyColorRebindPlans = [];
@@ -215,19 +214,6 @@
       return "Loading page...";
     }
     return "Loading file...";
-  }
-  function collectDescendantsIncludingInstances(root) {
-    const nodes = [];
-    const visit = (node) => {
-      nodes.push(node);
-      if (isChildrenMixin(node)) {
-        for (const child of node.children) {
-          visit(child);
-        }
-      }
-    };
-    visit(root);
-    return nodes;
   }
   function getPageName(node) {
     let current = node;
@@ -618,31 +604,6 @@
       }
     };
   }
-  async function componentSetNeedsColorModeMigration(componentSet) {
-    for (const child of componentSet.children) {
-      if (child.type !== "COMPONENT") {
-        continue;
-      }
-      const hasSemanticBinding = await visitFirstBoundColor(child, 0, async (hit) => {
-        try {
-          const variable = await figma.variables.getVariableByIdAsync(hit.variableId);
-          if (!variable) {
-            return null;
-          }
-          const parts = variable.name.split("/").map((part) => part.trim()).filter(Boolean);
-          if (parts.length >= 3 && normalizeToken(parts[0]) === "color" && SEMANTIC_COLOR_GROUPS.includes(normalizeToken(parts[1]))) {
-            return true;
-          }
-        } catch (e) {
-        }
-        return null;
-      });
-      if (hasSemanticBinding) {
-        return true;
-      }
-    }
-    return false;
-  }
   async function scanUnsupportedVariants() {
     const operation = "scan-unsupported-variants";
     pendingUnsupportedVariantPlans = [];
@@ -659,22 +620,17 @@
     });
     const plans = [];
     const skippedComponentSets = [];
-    const colorModeMigrationComponentSetIds = [];
     const errorComponentSetNames = [];
     for (let index = 0; index < componentSets.length; index += 1) {
       const componentSet = componentSets[index];
-      const isColorModeMigrationComponentSet = COLOR_MODE_MIGRATION_COMPONENT_SET_NAMES.some(
+      if (PRESERVED_COMPONENT_SET_NAMES.some(
         (name) => normalizeToken(name) === normalizeToken(componentSet.name)
-      );
-      if (isColorModeMigrationComponentSet) {
-        if (await componentSetNeedsColorModeMigration(componentSet)) {
-          colorModeMigrationComponentSetIds.push(componentSet.id);
-          skippedComponentSets.push({
-            id: componentSet.id,
-            name: componentSet.name,
-            reason: "Handled by color mode migration."
-          });
-        }
+      )) {
+        skippedComponentSets.push({
+          id: componentSet.id,
+          name: componentSet.name,
+          reason: "Alert and ValidationMessage keep their color variants \u2014 left unchanged."
+        });
         continue;
       }
       const children = componentSet.children.filter((child) => child.type === "COMPONENT");
@@ -749,12 +705,10 @@
       }
     }
     pendingUnsupportedVariantPlans = plans;
-    pendingColorModeMigrationComponentSetIds = colorModeMigrationComponentSetIds;
     const removeCount = plans.reduce((sum, plan) => sum + plan.variantsToRemove.length, 0);
     const renameCount = plans.reduce((sum, plan) => sum + plan.variantsToRename.length, 0);
     const skippedRenameCount = plans.reduce((sum, plan) => sum + plan.skippedRenames.length, 0);
-    const colorModeMigrationCount = colorModeMigrationComponentSetIds.length;
-    if (removeCount === 0 && renameCount === 0 && colorModeMigrationCount === 0) {
+    if (removeCount === 0 && renameCount === 0) {
       return {
         createdAt: (/* @__PURE__ */ new Date()).toISOString(),
         operation,
@@ -763,7 +717,6 @@
         details: {
           scannedComponentSetCount: componentSets.length,
           skippedComponentSets,
-          colorModeMigrationCount,
           errorComponentSetCount: errorComponentSetNames.length,
           errorComponentSetNames,
           unsupportedColors: UNSUPPORTED_COLORS,
@@ -775,12 +728,11 @@
       createdAt: (/* @__PURE__ */ new Date()).toISOString(),
       operation,
       status: "preview",
-      message: `Found ${removeCount} variant${removeCount === 1 ? "" : "s"} to remove, ${renameCount} variant${renameCount === 1 ? "" : "s"} to rename, and ${colorModeMigrationCount} color-mode set${colorModeMigrationCount === 1 ? "" : "s"} to migrate.`,
+      message: `Found ${removeCount} variant${removeCount === 1 ? "" : "s"} to remove and ${renameCount} variant${renameCount === 1 ? "" : "s"} to rename.`,
       details: {
         scannedComponentSetCount: componentSets.length,
         affectedComponentSetCount: plans.length,
         skippedComponentSets,
-        colorModeMigrationCount,
         errorComponentSetCount: errorComponentSetNames.length,
         errorComponentSetNames,
         removeCount,
@@ -830,7 +782,7 @@
   async function applyUnsupportedVariantPlans() {
     const operation = "apply-unsupported-variants";
     const plans = pendingUnsupportedVariantPlans;
-    if (plans.length === 0 && pendingColorModeMigrationComponentSetIds.length === 0) {
+    if (plans.length === 0) {
       return {
         createdAt: (/* @__PURE__ */ new Date()).toISOString(),
         operation,
@@ -940,9 +892,7 @@
         }
       }
     }
-    const colorModeMigration = await applyColorModeMigration();
     pendingUnsupportedVariantPlans = [];
-    pendingColorModeMigrationComponentSetIds = [];
     const status = failed.length > 0 ? "error" : "success";
     if (status === "success") {
       figma.commitUndo();
@@ -951,66 +901,14 @@
       createdAt: (/* @__PURE__ */ new Date()).toISOString(),
       operation,
       status,
-      message: failed.length > 0 ? `Removed ${removed.length}, renamed ${renamed.length}, failed ${failed.length}.` : `Removed ${removed.length} variant${removed.length === 1 ? "" : "s"}, renamed ${renamed.length}, and migrated color-mode colors.`,
+      message: failed.length > 0 ? `Removed ${removed.length}, renamed ${renamed.length}, failed ${failed.length}.` : `Removed ${removed.length} variant${removed.length === 1 ? "" : "s"} and renamed ${renamed.length}.`,
       details: {
         removedCount: removed.length,
         renamedCount: renamed.length,
         failedCount: failed.length,
-        colorModeMigration,
         removed,
         renamed,
         failed
-      }
-    };
-  }
-  async function getColorVariablesByName(colorCollection) {
-    const colorVariables = await figma.variables.getLocalVariablesAsync("COLOR");
-    return new Map(
-      colorVariables.filter((variable) => variable.variableCollectionId === colorCollection.id).map((variable) => [normalizeToken(variable.name), variable])
-    );
-  }
-  async function getComponentSetsByIds(ids) {
-    const componentSets = [];
-    for (const id of ids) {
-      const node = await figma.getNodeByIdAsync(id);
-      if ((node == null ? void 0 : node.type) === "COMPONENT_SET") {
-        componentSets.push(node);
-      }
-    }
-    return componentSets;
-  }
-  function getColorModeForComponent(component, colorCollection) {
-    const color = getColorVariantPropertyValue(component);
-    if (!color || !SEMANTIC_COLOR_GROUPS.includes(normalizeToken(color))) {
-      return null;
-    }
-    return findModeByName(colorCollection, color);
-  }
-  function getPaintMigrationTarget(paint, colorVariablesByName) {
-    var _a, _b;
-    if (paint.type !== "SOLID") {
-      return null;
-    }
-    const variableId = (_b = (_a = paint.boundVariables) == null ? void 0 : _a.color) == null ? void 0 : _b.id;
-    if (!variableId) {
-      return null;
-    }
-    return {
-      variableId,
-      getTargetVariable: async () => {
-        const sourceVariable = await figma.variables.getVariableByIdAsync(variableId);
-        if (!sourceVariable) {
-          return null;
-        }
-        const parts = sourceVariable.name.split("/").map((part) => part.trim()).filter(Boolean);
-        if (parts.length < 3 || normalizeToken(parts[0]) !== "color") {
-          return null;
-        }
-        const [, modeName, ...scaleParts] = parts;
-        if (!SEMANTIC_COLOR_GROUPS.includes(normalizeToken(modeName))) {
-          return null;
-        }
-        return colorVariablesByName.get(normalizeToken(scaleParts.join("/"))) || null;
       }
     };
   }
@@ -1022,114 +920,6 @@
     if (propertyName === "strokes" && "setStrokesAsync" in node) {
       await node.setStrokesAsync(paints);
     }
-  }
-  async function migrateSemanticPaintsOnNode(node, colorVariablesByName) {
-    let migratedPaintCount = 0;
-    let failedPaintWriteCount = 0;
-    for (const propertyName of ["fills", "strokes"]) {
-      const paintNode = node;
-      if (!(propertyName in paintNode)) {
-        continue;
-      }
-      const paints = paintNode[propertyName];
-      if (!Array.isArray(paints)) {
-        continue;
-      }
-      const nextPaints = [];
-      let changed = false;
-      let changedPaintCount = 0;
-      for (const paint of paints) {
-        const target = getPaintMigrationTarget(paint, colorVariablesByName);
-        if (!target || paint.type !== "SOLID") {
-          nextPaints.push(paint);
-          continue;
-        }
-        const targetVariable = await target.getTargetVariable();
-        if (!targetVariable) {
-          nextPaints.push(paint);
-          continue;
-        }
-        nextPaints.push(figma.variables.setBoundVariableForPaint(paint, "color", targetVariable));
-        changed = true;
-        changedPaintCount += 1;
-      }
-      if (changed) {
-        try {
-          await setPaintsOnNode(node, propertyName, nextPaints);
-          migratedPaintCount += changedPaintCount;
-        } catch (error) {
-          failedPaintWriteCount += changedPaintCount;
-          console.warn("[Color migration] Failed to write paints", {
-            nodeId: node.id,
-            nodeName: node.name,
-            property: propertyName,
-            changedPaintCount,
-            error: error instanceof Error ? error.message : String(error)
-          });
-        }
-      }
-    }
-    return {
-      migratedPaintCount,
-      failedPaintWriteCount
-    };
-  }
-  async function applyColorModeMigration() {
-    const componentSetIds = pendingColorModeMigrationComponentSetIds;
-    if (componentSetIds.length === 0) {
-      return {
-        migratedComponentSetCount: 0,
-        migratedVariantCount: 0,
-        migratedPaintCount: 0,
-        skipped: []
-      };
-    }
-    const colorCollection = await getColorCollection();
-    if (!colorCollection) {
-      return {
-        migratedComponentSetCount: 0,
-        migratedVariantCount: 0,
-        migratedPaintCount: 0,
-        skipped: [{ reason: "Could not find a Color or Main color collection." }]
-      };
-    }
-    const colorVariablesByName = await getColorVariablesByName(colorCollection);
-    const componentSets = await getComponentSetsByIds(componentSetIds);
-    const skipped = [];
-    let migratedVariantCount = 0;
-    let migratedPaintCount = 0;
-    let failedPaintWriteCount = 0;
-    for (const componentSet of componentSets) {
-      for (const component of componentSet.children) {
-        if (component.type !== "COMPONENT") {
-          continue;
-        }
-        const mode = getColorModeForComponent(component, colorCollection);
-        if (!mode) {
-          skipped.push({
-            componentSetName: componentSet.name,
-            componentName: component.name,
-            reason: "Could not resolve color mode."
-          });
-          continue;
-        }
-        const setExplicitVariableModeForCollection = component.setExplicitVariableModeForCollection.bind(component);
-        setExplicitVariableModeForCollection(colorCollection, mode.modeId);
-        for (const node of collectDescendantsIncludingInstances(component)) {
-          const paintMigration = await migrateSemanticPaintsOnNode(node, colorVariablesByName);
-          migratedPaintCount += paintMigration.migratedPaintCount;
-          failedPaintWriteCount += paintMigration.failedPaintWriteCount;
-        }
-        migratedVariantCount += 1;
-      }
-    }
-    return {
-      migratedComponentSetCount: componentSets.length,
-      migratedVariantCount,
-      migratedPaintCount,
-      failedPaintWriteCount,
-      skipped
-    };
   }
   function findTargetComponent(lookup, componentSetName, tokens) {
     const componentSet = lookup.componentSets.find((candidate) => normalizeToken(candidate.name) === normalizeToken(componentSetName));
@@ -1585,7 +1375,7 @@
         continue;
       }
       const oldComponentSet = main.parent;
-      if (COLOR_MODE_MIGRATION_COMPONENT_SET_NAMES.some(
+      if (PRESERVED_COMPONENT_SET_NAMES.some(
         (name) => normalizeToken(name) === normalizeToken(oldComponentSet.name)
       )) {
         continue;
