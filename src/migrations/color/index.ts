@@ -1,54 +1,10 @@
-type Operation =
-  | 'check-prime-status'
-  | 'prime-variables'
-  | 'scan-unsupported-variants'
-  | 'apply-unsupported-variants'
-  | 'load-color-modes'
-  | 'scan-missing-instances'
-  | 'apply-missing-instances'
-  | 'scan-library-stuck-instances'
-  | 'apply-library-stuck-instances';
-
-type FixScope = 'selection' | 'page' | 'file';
-
-type PluginMessage =
-  | { type: 'check-prime-status' }
-  | { type: 'prime-variables' }
-  | { type: 'scan-unsupported-variants' }
-  | { type: 'apply-unsupported-variants' }
-  | { type: 'load-color-modes' }
-  | { type: 'scan-missing-instances'; scope: FixScope; supportModeId: string | null }
-  | { type: 'apply-missing-instances'; supportModeId: string | null }
-  | { type: 'scan-library-stuck-instances'; scope: FixScope }
-  | { type: 'apply-library-stuck-instances'; supportFallbackModeId: string | null; rebindLegacyVariables: boolean }
-  | { type: 'focus-node'; nodeId: string };
-
-type UiMessage =
-  | { type: 'operation-progress'; payload: OperationProgressPayload }
-  | { type: 'operation-result'; payload: OperationResultPayload };
-
-type JsonValue =
-  | string
-  | number
-  | boolean
-  | null
-  | JsonValue[]
-  | { [key: string]: JsonValue };
-
-type OperationProgressPayload = {
-  operation: Operation;
-  message: string;
-  processed?: number;
-  total?: number;
-};
-
-type OperationResultPayload = {
-  createdAt: string;
-  operation: Operation;
-  status: 'success' | 'noop' | 'error' | 'preview';
-  message: string;
-  details: JsonValue;
-};
+import { postOperationProgress } from '../../core/harness';
+import type {
+  FixScope,
+  JsonValue,
+  MigrationModule,
+  OperationResultPayload,
+} from '../../core/types';
 
 type UnsupportedColor =
   | 'neutral'
@@ -177,40 +133,6 @@ let pendingColorModeMigrationComponentSetIds: string[] = [];
 let pendingMissingInstancePlans: MissingInstancePlan[] = [];
 let pendingLibraryStuckInstancePlans: LibraryStuckInstancePlan[] = [];
 let pendingLegacyColorRebindPlans: LegacyColorRebindPlan[] = [];
-
-figma.showUI(__html__, { width: 480, height: 460, themeColors: true });
-
-function postToUi(message: UiMessage) {
-  figma.ui.postMessage(message);
-}
-
-// Skip per-batch progress posts for small workloads — the UI flash is more
-// distracting than informative, and a short run finishes before progress is
-// even visible. Status messages without a total (e.g. "Loading...") always
-// post so the UI never appears stuck on initial load.
-const PROGRESS_THRESHOLD = 200;
-
-function postOperationProgress(payload: OperationProgressPayload) {
-  if (typeof payload.total === 'number' && payload.total < PROGRESS_THRESHOLD) {
-    return;
-  }
-  postToUi({
-    type: 'operation-progress',
-    payload,
-  });
-}
-
-function asErrorResult(operation: Operation, error: unknown): OperationResultPayload {
-  return {
-    createdAt: new Date().toISOString(),
-    operation,
-    status: 'error',
-    message: error instanceof Error ? error.message : String(error),
-    details: {
-      error: error instanceof Error ? error.stack || error.message : String(error),
-    },
-  };
-}
 
 function isColorVariantPropertyName(propertyName: string) {
   return COLOR_VARIANT_PROPERTY_NAMES.includes(normalizeToken(propertyName));
@@ -496,7 +418,7 @@ function moveDuplicateRenameTargetsToSkipped(plan: ComponentSetRemovalPlan) {
 }
 
 async function checkPrimeStatus(): Promise<OperationResultPayload> {
-  const operation: Operation = 'check-prime-status';
+  const operation ='check-prime-status';
   const sourceCollectionName = 'Main color';
   const supportCollectionName = 'Support color';
   const targetCollectionName = 'Color';
@@ -2111,7 +2033,7 @@ async function findLegacyColorModeOverride(node: SceneNode): Promise<{
 }
 
 async function scanLibraryStuckInstances(scope: FixScope): Promise<OperationResultPayload> {
-  const operation: Operation = 'scan-library-stuck-instances';
+  const operation ='scan-library-stuck-instances';
   pendingLibraryStuckInstancePlans = [];
 
   postOperationProgress({ operation, message: getScopeLoadingMessage(scope) });
@@ -2532,7 +2454,7 @@ async function rebindLegacyColorBindingsInSubtree(
 }
 
 async function applyLibraryStuckInstancePlans(supportFallbackModeId: string | null, rebindLegacyVariables: boolean): Promise<OperationResultPayload> {
-  const operation: Operation = 'apply-library-stuck-instances';
+  const operation ='apply-library-stuck-instances';
   const plans = pendingLibraryStuckInstancePlans;
 
   let fixedCount = 0;
@@ -2975,74 +2897,31 @@ async function applyLegacyColorRebindPlans(
   return { reboundCount, skippedCount, failedPaintCount, modeSetCount, nodeFixedCount, failedCount };
 }
 
-async function runOperation(operation: Operation, callback: () => Promise<OperationResultPayload>) {
-  postToUi({
-    type: 'operation-result',
-    payload: await callback().catch((error) => asErrorResult(operation, error)),
-  });
-}
-
-figma.ui.onmessage = async (msg: PluginMessage) => {
-  if (msg.type === 'check-prime-status') {
-    await runOperation('check-prime-status', checkPrimeStatus);
-    return;
-  }
-
-  if (msg.type === 'prime-variables') {
-    await runOperation('prime-variables', primeVariables);
-    return;
-  }
-
-  if (msg.type === 'scan-unsupported-variants') {
-    await runOperation('scan-unsupported-variants', scanUnsupportedVariants);
-    return;
-  }
-
-  if (msg.type === 'apply-unsupported-variants') {
-    await runOperation('apply-unsupported-variants', applyUnsupportedVariantPlans);
-    return;
-  }
-
-  if (msg.type === 'load-color-modes') {
-    await runOperation('load-color-modes', loadColorModes);
-    return;
-  }
-
-  if (msg.type === 'scan-missing-instances') {
-    await runOperation('scan-missing-instances', () => scanMissingInstances(msg.scope, msg.supportModeId));
-    return;
-  }
-
-  if (msg.type === 'apply-missing-instances') {
-    await runOperation('apply-missing-instances', () => applyMissingInstancePlans(msg.supportModeId));
-    return;
-  }
-
-  if (msg.type === 'scan-library-stuck-instances') {
-    await runOperation('scan-library-stuck-instances', () => scanLibraryStuckInstances(msg.scope));
-    return;
-  }
-
-  if (msg.type === 'apply-library-stuck-instances') {
-    await runOperation('apply-library-stuck-instances', () => applyLibraryStuckInstancePlans(msg.supportFallbackModeId, msg.rebindLegacyVariables));
-    return;
-  }
-
-  if (msg.type === 'focus-node') {
-    const node = await figma.getNodeByIdAsync(msg.nodeId);
-    if (!node || node.type === 'DOCUMENT' || node.type === 'PAGE') {
-      return;
-    }
-    // Walk up the parent chain to find the owning page so we can switch
-    // to it before scrolling — the node might live on another page.
-    let cursor: BaseNode | null = node.parent;
-    while (cursor && cursor.type !== 'PAGE') {
-      cursor = cursor.parent;
-    }
-    if (cursor && cursor.type === 'PAGE' && cursor.id !== figma.currentPage.id) {
-      await figma.setCurrentPageAsync(cursor);
-    }
-    figma.currentPage.selection = [node];
-    figma.viewport.scrollAndZoomIntoView([node]);
-  }
+export const colorMigration: MigrationModule = {
+  id: 'color',
+  title: 'Color migration',
+  description: 'Migrate color variants and modes, and clean up Support color variables.',
+  operations: {
+    'check-prime-status': () => checkPrimeStatus(),
+    'prime-variables': () => primeVariables(),
+    'scan-unsupported-variants': () => scanUnsupportedVariants(),
+    'apply-unsupported-variants': () => applyUnsupportedVariantPlans(),
+    'load-color-modes': () => loadColorModes(),
+    'scan-missing-instances': (args) => {
+      const a = (args || {}) as { scope: FixScope; supportModeId: string | null };
+      return scanMissingInstances(a.scope, a.supportModeId);
+    },
+    'apply-missing-instances': (args) => {
+      const a = (args || {}) as { supportModeId: string | null };
+      return applyMissingInstancePlans(a.supportModeId);
+    },
+    'scan-library-stuck-instances': (args) => {
+      const a = (args || {}) as { scope: FixScope };
+      return scanLibraryStuckInstances(a.scope);
+    },
+    'apply-library-stuck-instances': (args) => {
+      const a = (args || {}) as { supportFallbackModeId: string | null; rebindLegacyVariables: boolean };
+      return applyLibraryStuckInstancePlans(a.supportFallbackModeId, a.rebindLegacyVariables);
+    },
+  },
 };

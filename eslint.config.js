@@ -33,6 +33,8 @@ module.exports = tseslint.config(
     },
   },
   {
-    ignores: ['code.js', 'dist', 'eslint.config.js', 'examples/**'],
+    // ui/** is bundled by esbuild and not yet type-checked (it previously lived
+    // inline in ui.html); *.mjs are Node build scripts.
+    ignores: ['code.js', 'dist', 'eslint.config.js', 'build.mjs', 'ui/**', '*.mjs', 'examples/**'],
   },
 )

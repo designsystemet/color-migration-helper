@@ -1,6 +1,8 @@
 {
   "compilerOptions": {
     "target": "es2017",
+    "module": "esnext",
+    "moduleResolution": "bundler",
     "lib": ["es2020"],
     "strict": true,
     "typeRoots": [
@@ -8,6 +10,6 @@
       "./node_modules/@figma"
     ]
   },
-  "include": ["code.ts"],
+  "include": ["src"],
   "exclude": ["node_modules", "examples"]
 }

@@ -83,16 +83,44 @@ Install dependencies:
 npm install
 ```
 
-Build `code.ts` into `code.js`:
+Build (esbuild bundles the backend and UI):
 
 ```bash
-npm run build
+npm run build       # one-off build
+npm run watch       # rebuild on change
+npm run typecheck   # tsc --noEmit over src/
+npm run lint        # eslint over src/
 ```
 
-Run lint:
+`npm run build` runs [build.mjs](build.mjs), which:
+- bundles `src/main.ts` (and its imports) into `code.js`, and
+- bundles `ui/main.ts` into a string and inlines it into `ui/index.html`, writing the single `ui.html` Figma loads.
 
-```bash
-npm run lint
+Both `code.js` and `ui.html` are generated — edit the sources under `src/` and `ui/`.
+
+### Architecture
+
+The plugin is structured so each migration (color, and future ones such as typography) is a self-contained module that plugs into a shared harness.
+
+```
+src/
+  core/        types + harness (messaging, registry, message router)
+  migrations/
+    color/     the color migration (operations exposed as a MigrationModule)
+  main.ts      startPlugin([colorMigration])
+ui/
+  core/        bridge (messaging) + shell (migration picker, nav, busy overlay)
+  migrations/
+    color/     the color UI controller
+  main.ts      initBridge(); initShell([createColorController()])
 ```
 
-`code.js` is generated from `code.ts` and is the file loaded by Figma.
+- Backend messages use one generic envelope, `{ type: 'run', domain, operation, args }`, plus a shared `focus-node`. The harness router (`core/harness.ts`) dispatches `run` to the matching module's named operation; results come back as `OperationResultPayload` tagged with the `domain`.
+- The UI shell renders a migration picker from the registered controllers and routes results to whichever controller is active.
+
+### Adding a migration
+
+1. Backend: add `src/migrations/<name>/index.ts` exporting a `MigrationModule` (`id`, `title`, `description`, and an `operations` map), then add it to the `startPlugin([...])` call in `src/main.ts`.
+2. UI: add `ui/migrations/<name>/controller.ts` exposing the controller contract (`id`, `title`, `description`, `icon`, `rootId`, `enter`, `onProgress`, `onResult`) plus its view markup in `ui/index.html` (wrapped in a `migration-root` with a `data-go-to-migrations` back button), then register it in `ui/main.ts`.
+
+No central union or switch needs editing — both sides resolve migrations through their registries.

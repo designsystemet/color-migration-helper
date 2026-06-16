@@ -1,0 +1,591 @@
+<style>
+  :root {
+    color: var(--figma-color-text, #1e1e1e);
+    background: var(--figma-color-bg, #ffffff);
+    font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-size: 12px;
+  }
+
+  body {
+    margin: 0;
+  }
+
+  .app {
+    min-height: 100vh;
+  }
+
+  p {
+    margin: 0;
+    color: var(--figma-color-text-secondary, #6b6b6b);
+    line-height: 1.45;
+  }
+
+  main {
+    display: grid;
+    gap: 12px;
+    padding: 16px;
+  }
+
+  .view {
+    display: none;
+    gap: 12px;
+  }
+
+  .view.view-active {
+    display: grid;
+  }
+
+  .landing {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    padding: 8px 0;
+  }
+
+  .landing-card {
+    display: grid;
+    justify-items: center;
+    align-content: center;
+    gap: 12px;
+    min-height: 140px;
+    padding: 20px;
+    text-align: center;
+  }
+
+  .landing-card svg {
+    width: 28px;
+    height: 28px;
+    color: var(--figma-color-icon, #1e1e1e);
+  }
+
+  .landing-card-label {
+    font-weight: 600;
+    font-size: 13px;
+  }
+
+  .view-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 32px;
+  }
+
+  .back-button {
+    display: grid;
+    place-items: center;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: var(--figma-color-text-secondary, #6b6b6b);
+    cursor: pointer;
+  }
+
+  .back-button:hover {
+    background: var(--figma-color-bg-hover, #f0f0f0);
+    border-radius: 4px;
+  }
+
+  .back-button svg {
+    width: 16px;
+    height: 16px;
+  }
+
+  .segmented {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 2px;
+    border: 1px solid var(--figma-color-border, #d9d9d9);
+    border-radius: 6px;
+    background: var(--figma-color-bg-secondary, #f7f7f7);
+    padding: 2px;
+  }
+
+  .segment {
+    min-height: 30px;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--figma-color-text-secondary, #6b6b6b);
+    cursor: pointer;
+    font: inherit;
+    font-weight: 550;
+    padding: 0 8px;
+  }
+
+  .segment.active {
+    background: var(--figma-color-bg, #ffffff);
+    color: var(--figma-color-text, #1e1e1e);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+  }
+
+  .step {
+    display: none;
+    gap: 12px;
+  }
+
+  .step.active {
+    display: grid;
+  }
+
+  .panel {
+    border: 1px solid var(--figma-color-border, #e5e5e5);
+    border-radius: 6px;
+    padding: 12px;
+  }
+
+  .is-hidden {
+    /* Utility class must beat element rules that also set display (e.g.
+       .toolbar { display: flex }), which would otherwise win on source order. */
+    display: none !important;
+  }
+
+  .panel-title {
+    margin-bottom: 6px;
+    font-weight: 650;
+  }
+
+  /* Status card — colored frame + icon used to make a step's state
+     unmistakable at a glance (e.g. the Prepare step). */
+  .status-card {
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+    border: 1px solid var(--figma-color-border, #e5e5e5);
+    border-radius: 6px;
+    padding: 12px;
+  }
+
+  .status-card .status-icon {
+    flex: 0 0 auto;
+    width: 16px;
+    height: 16px;
+    margin-top: 1px;
+    color: var(--figma-color-icon-secondary, #6b6b6b);
+  }
+
+  .status-card .status-icon svg {
+    width: 100%;
+    height: 100%;
+    display: block;
+  }
+
+  .status-card .status-body {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .status-card .status-text {
+    margin: 0;
+  }
+
+  .status-card .status-note {
+    margin: 4px 0 0;
+    font-size: 11px;
+    color: var(--figma-color-text-secondary, #6b6b6b);
+  }
+
+  .status-success {
+    border-color: var(--figma-color-icon-success, #14ae5c);
+    background: var(--figma-color-bg-success-tertiary, rgba(20, 174, 92, 0.08));
+  }
+  .status-success .status-icon {
+    color: var(--figma-color-icon-success, #14ae5c);
+  }
+
+  .status-warning {
+    border-color: var(--figma-color-icon-warning, #e5a800);
+    background: var(--figma-color-bg-warning-tertiary, rgba(229, 168, 0, 0.1));
+  }
+  .status-warning .status-icon {
+    color: var(--figma-color-icon-warning, #e5a800);
+  }
+
+  .status-error {
+    border-color: var(--figma-color-icon-danger, #e03e3e);
+    background: var(--figma-color-bg-danger-tertiary, rgba(224, 62, 62, 0.08));
+  }
+  .status-error .status-icon {
+    color: var(--figma-color-icon-danger, #e03e3e);
+  }
+
+  .status-info {
+    border-color: var(--figma-color-icon-brand, #0d99ff);
+    background: var(--figma-color-bg-brand-tertiary, rgba(13, 153, 255, 0.08));
+  }
+  .status-info .status-icon {
+    color: var(--figma-color-icon-brand, #0d99ff);
+  }
+
+  .status-neutral {
+    border-left-width: 1px;
+  }
+
+  .toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .control-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+
+  .control-row.stacked {
+    grid-template-columns: 1fr;
+  }
+
+  .checkbox-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    user-select: none;
+    color: var(--figma-color-text, #1e1e1e);
+    line-height: 1.35;
+  }
+
+  .checkbox-row input[type='checkbox'] {
+    margin: 0;
+  }
+
+  label {
+    display: grid;
+    gap: 4px;
+    color: var(--figma-color-text-secondary, #6b6b6b);
+    line-height: 1.35;
+  }
+
+  select {
+    min-height: 32px;
+    border: 1px solid var(--figma-color-border, #d9d9d9);
+    border-radius: 4px;
+    background: var(--figma-color-bg, #ffffff);
+    color: var(--figma-color-text, #1e1e1e);
+    font: inherit;
+    padding: 0 8px;
+  }
+
+  button {
+    min-height: 32px;
+    border: 1px solid var(--figma-color-border, #d9d9d9);
+    border-radius: 4px;
+    background: var(--figma-color-bg, #ffffff);
+    color: var(--figma-color-text, #1e1e1e);
+    cursor: pointer;
+    font: inherit;
+    font-weight: 550;
+    padding: 0 12px;
+  }
+
+  button.primary {
+    border-color: var(--figma-color-bg-brand, #0d99ff);
+    background: var(--figma-color-bg-brand, #0d99ff);
+    color: var(--figma-color-text-onbrand, #ffffff);
+  }
+
+  button:disabled {
+    cursor: default;
+    opacity: 0.45;
+  }
+
+  .status-line {
+    color: var(--figma-color-text, #1e1e1e);
+    line-height: 1.45;
+  }
+
+  .summary-line,
+  .detail-meta {
+    color: var(--figma-color-text-secondary, #6b6b6b);
+    line-height: 1.45;
+  }
+
+  .details-list {
+    display: grid;
+    gap: 8px;
+    margin-top: 10px;
+  }
+
+  .detail-item {
+    border-top: 1px solid var(--figma-color-border, #e5e5e5);
+    padding-top: 8px;
+  }
+
+  .detail-title {
+    color: var(--figma-color-text, #1e1e1e);
+    font-weight: 550;
+    line-height: 1.35;
+  }
+
+  .instances-accordion {
+    margin-top: 10px;
+  }
+
+  .instances-accordion summary {
+    cursor: pointer;
+    font-weight: 550;
+    padding: 4px 0;
+    color: var(--figma-color-text, #1e1e1e);
+  }
+
+  .instance-list {
+    display: grid;
+    gap: 4px;
+    margin-top: 6px;
+    max-height: 280px;
+    overflow-y: auto;
+  }
+
+  .instance-link {
+    display: block;
+    width: 100%;
+    min-height: auto;
+    text-align: left;
+    padding: 8px 10px;
+    line-height: 1.35;
+  }
+
+  .instance-link:hover {
+    background: var(--figma-color-bg-hover, #f5f5f5);
+  }
+
+  .instance-link-name {
+    font-weight: 550;
+    color: var(--figma-color-text, #1e1e1e);
+  }
+
+  .instance-link-meta {
+    margin-top: 2px;
+    font-weight: 400;
+    color: var(--figma-color-text-secondary, #6b6b6b);
+  }
+
+  .busy-overlay {
+    position: fixed;
+    inset: 0;
+    display: none;
+    place-items: center;
+    backdrop-filter: blur(12px);
+    z-index: 10;
+  }
+
+  .busy-overlay.active {
+    display: grid;
+  }
+
+  .busy-card {
+    display: grid;
+    justify-items: center;
+    gap: 10px;
+    border: 1px solid var(--figma-color-border, #e5e5e5);
+    border-radius: 6px;
+    background: var(--figma-color-bg, #ffffff);
+    padding: 18px;
+    width: min(280px, calc(100vw - 48px));
+  }
+
+  .spinner {
+    width: 24px;
+    height: 24px;
+    border: 3px solid var(--figma-color-border, #d9d9d9);
+    border-top-color: var(--figma-color-bg-brand, #0d99ff);
+    border-radius: 999px;
+    animation: spin 0.8s linear infinite;
+  }
+
+  @keyframes spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+</style>
+
+<div class="app">
+  <main>
+
+    <!-- Migration picker — cards injected by the shell from the registry -->
+    <section class="view view-active" id="migration-picker"></section>
+
+    <!-- Color migration: flow chooser + library/sketches views -->
+    <div class="migration-root is-hidden" id="migration-color">
+
+    <!-- Color flow chooser -->
+    <section class="view view-active" id="view-landing">
+      <div class="view-header">
+        <button class="back-button" data-go-to-migrations aria-label="Back to migrations">
+          <svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <path d="M10 3L5 8l5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
+      </div>
+      <div class="landing">
+        <button class="landing-card" data-target-view="library">
+          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <rect x="4" y="4" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.5"/>
+            <rect x="13" y="4" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.5"/>
+            <rect x="4" y="13" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.5"/>
+            <rect x="13" y="13" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.5"/>
+          </svg>
+          <span class="landing-card-label">Update library</span>
+        </button>
+        <button class="landing-card" data-target-view="sketches">
+          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <path d="M5 4h10l5 5v11a1 1 0 01-1 1H5a1 1 0 01-1-1V5a1 1 0 011-1z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+            <path d="M15 4v4a1 1 0 001 1h4" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+          </svg>
+          <span class="landing-card-label">Update sketches</span>
+        </button>
+      </div>
+    </section>
+
+    <!-- Library view -->
+    <section class="view" id="view-library">
+      <div class="view-header">
+        <button class="back-button" data-target-view="landing" aria-label="Back">
+          <svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <path d="M10 3L5 8l5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
+      </div>
+
+      <div class="segmented" role="tablist">
+        <button class="segment active" data-step="prime" role="tab" aria-selected="true" aria-controls="step-prime" id="tab-prime">1. Prepare</button>
+        <button class="segment" data-step="variants" role="tab" aria-selected="false" aria-controls="step-variants" id="tab-variants">2. Remove variants</button>
+        <button class="segment" data-step="instances" role="tab" aria-selected="false" aria-controls="step-instances" id="tab-instances">3. Fix in library</button>
+      </div>
+
+      <section class="step active" id="step-prime" role="tabpanel" aria-labelledby="tab-prime" tabindex="0">
+        <div class="status-card status-neutral" id="primeStatus">
+          <span class="status-icon is-hidden" id="primeIcon" aria-hidden="true"></span>
+          <div class="status-body">
+            <p class="status-text" id="primeStatusText">Checking variable state...</p>
+            <p class="status-note is-hidden" id="primeNote"></p>
+            <div class="toolbar is-hidden" id="primeActions" style="margin-top: 10px;">
+              <button class="primary" id="prime">Prepare variables</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="step" id="step-variants" role="tabpanel" aria-labelledby="tab-variants" tabindex="0">
+        <section class="panel">
+          <div class="panel-title">Remove variants</div>
+          <p>Remove old color variants, update variant names, and move Alert and ValidationMessage colors to modes.</p>
+          <div class="toolbar" style="margin-top: 10px;">
+            <button class="primary" id="scanVariants">Scan variants</button>
+          </div>
+        </section>
+        <section class="panel is-hidden" id="variantsResultPanel">
+          <div class="panel-title">Variant scan result</div>
+          <div class="summary-line" id="variantsSummary"></div>
+          <div class="details-list" id="variantsDetails"></div>
+          <div class="toolbar" style="margin-top: 10px;">
+            <button class="primary" id="applyVariants" disabled>Remove and update variants</button>
+          </div>
+        </section>
+      </section>
+
+      <section class="step" id="step-instances" role="tabpanel" aria-labelledby="tab-instances" tabindex="0">
+        <section class="panel">
+          <div class="panel-title">Update missing instances</div>
+          <p>Find instances that used old color variants and move them to the matching current variant. Also cleans up loose Support color layers (frames, text) in the same scope, using the support mode chosen below.</p>
+          <div class="control-row stacked" style="margin-top: 10px;">
+            <label>
+              Scope
+              <select id="fixScope">
+                <option value="selection">Selection</option>
+                <option value="page">Current page</option>
+                <option value="file">Whole file</option>
+              </select>
+            </label>
+            <label>
+              Use this mode for old support variants
+              <select id="supportMode"></select>
+            </label>
+          </div>
+          <div class="toolbar" style="margin-top: 10px;">
+            <button class="primary" id="scanMissing">Scan instances</button>
+          </div>
+        </section>
+        <section class="panel is-hidden" id="instancesResultPanel">
+          <div class="panel-title">Instance scan result</div>
+          <div class="summary-line" id="instancesSummary"></div>
+          <div class="details-list" id="instancesDetails"></div>
+          <div class="toolbar" style="margin-top: 10px;">
+            <button class="primary" id="applyMissing" disabled>Update instances</button>
+          </div>
+        </section>
+
+      </section>
+    </section>
+
+    <!-- Sketches view -->
+    <section class="view" id="view-sketches">
+      <div class="view-header">
+        <button class="back-button" data-target-view="landing" aria-label="Back">
+          <svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <path d="M10 3L5 8l5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
+      </div>
+
+      <section class="panel">
+        <div class="panel-title">Update sketches that use this library</div>
+        <p>Find instances stuck on the pre-migration library version and update them to the current one. Also cleans up loose Support color layers (frames, text) in the same scope. Run this in your sketch file after updating the library.</p>
+        <div class="control-row stacked" style="margin-top: 10px;">
+          <label>
+            Scope
+            <select id="libraryFixScope">
+              <option value="selection">Selection</option>
+              <option value="page">Current page</option>
+              <option value="file">Whole file</option>
+            </select>
+          </label>
+        </div>
+        <div class="toolbar" style="margin-top: 10px;">
+          <button class="primary" id="scanLibrary">Scan instances</button>
+        </div>
+      </section>
+      <section class="panel is-hidden" id="libraryResultPanel">
+        <div class="panel-title">Library scan result</div>
+        <div class="summary-line" id="librarySummary"></div>
+        <div class="details-list" id="libraryDetails"></div>
+        <div class="control-row stacked is-hidden" id="librarySupportChoiceRow" style="margin-top: 10px;">
+          <label>
+            Replace 'support' with
+            <select id="librarySupportMode"></select>
+          </label>
+        </div>
+        <div style="margin-top: 10px;">
+          <label class="checkbox-row">
+            <input type="checkbox" id="rebindLegacyVariables">
+            <span>Rebind legacy color variables (experimental)</span>
+          </label>
+        </div>
+        <div class="toolbar" style="margin-top: 10px;">
+          <button class="primary" id="applyLibrary" disabled>Update instances</button>
+        </div>
+      </section>
+
+    </section>
+
+    </div>
+    <!-- /migration-color -->
+
+  </main>
+
+  <div class="busy-overlay" id="busyOverlay">
+    <div class="busy-card">
+      <div class="spinner"></div>
+      <div class="status-line" id="busyText">Working...</div>
+    </div>
+  </div>
+</div>
+
+<script>
+/*__UI_BUNDLE__*/
+</script>
