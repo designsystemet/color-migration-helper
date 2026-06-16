@@ -93,7 +93,6 @@
   var COLOR_COLLECTION_NAMES = ["Color", "Main color"];
   var LEGACY_COLOR_COLLECTION_NAMES = ["Main color", "Support color"];
   var NEUTRAL_MODE_NAME = "neutral";
-  var DEFAULT_COLOR_MODE_NAME = "accent";
   var COLOR_VARIANT_PROPERTY_NAMES = ["color", "color mode"];
   var COLOR_MODE_MIGRATION_COMPONENT_SET_NAMES = ["Alert", "ValidationMessage"];
   var SEMANTIC_COLOR_GROUPS = ["info", "warning", "danger", "success"];
@@ -206,7 +205,7 @@
     if (exactMode) {
       return exactMode;
     }
-    return findModeByName(collection, DEFAULT_COLOR_MODE_NAME) || collection.modes[0] || null;
+    return collection.modes.find((mode) => mode.modeId === collection.defaultModeId) || collection.modes[0] || null;
   }
   function getScopeLoadingMessage(scope) {
     if (scope === "selection") {

@@ -118,7 +118,6 @@ const COLOR_COLLECTION_NAMES = ['Color', 'Main color'];
 // Sketch files may still have explicit mode overrides referencing these.
 const LEGACY_COLOR_COLLECTION_NAMES = ['Main color', 'Support color'];
 const NEUTRAL_MODE_NAME = 'neutral';
-const DEFAULT_COLOR_MODE_NAME = 'accent';
 // Older components used both "color" and "color mode" as the variant property
 // that selected neutral/support/etc. Treat both as the same migration axis.
 const COLOR_VARIANT_PROPERTY_NAMES = ['color', 'color mode'];
@@ -292,7 +291,12 @@ function findTargetMode(collection: VariableCollection, removedColor: string, su
     return exactMode;
   }
 
-  return findModeByName(collection, DEFAULT_COLOR_MODE_NAME) || collection.modes[0] || null;
+  // No same-named mode: fall back to the collection's own default mode rather
+  // than a hardcoded name (users may rename their default mode). modes[0] is a
+  // last-resort guard in case the default can't be resolved.
+  return collection.modes.find((mode) => mode.modeId === collection.defaultModeId)
+    || collection.modes[0]
+    || null;
 }
 
 function getScopeLoadingMessage(scope: FixScope) {
