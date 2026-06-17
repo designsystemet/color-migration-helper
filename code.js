@@ -99,6 +99,8 @@
   var SKIP_MISSING_INSTANCE_MODE_CONTEXTS = ["TableColumn"];
   var pendingUnsupportedVariantPlans = [];
   var pendingMissingInstancePlans = [];
+  var pendingMissingInstanceScope = null;
+  var pendingNestedSwapped = [];
   var pendingLibraryStuckInstancePlans = [];
   var pendingLegacyColorRebindPlans = [];
   function isColorVariantPropertyName(propertyName) {
@@ -573,6 +575,62 @@
       }
     }
     return instances;
+  }
+  var NESTED_SWAPPED_MAX_NODES = 5e4;
+  async function collectNestedSwappedInstances(topInstances) {
+    const found = [];
+    const reportedNodeIds = /* @__PURE__ */ new Set();
+    let walked = 0;
+    const visit = async (node, top, depth) => {
+      if (walked > NESTED_SWAPPED_MAX_NODES) {
+        return;
+      }
+      walked += 1;
+      let descend = true;
+      if (node.type === "INSTANCE" && depth > 0) {
+        let main = null;
+        try {
+          main = await node.getMainComponentAsync();
+        } catch (e) {
+          main = null;
+        }
+        let mainState;
+        if (!main) {
+          mainState = "missing";
+        } else if (main.remote === false && !main.parent) {
+          mainState = "detached-local";
+        } else {
+          mainState = "ok";
+        }
+        if ((mainState === "missing" || mainState === "detached-local") && !reportedNodeIds.has(node.id)) {
+          reportedNodeIds.add(node.id);
+          const oldComponentSetName = main && main.parent && main.parent.type === "COMPONENT_SET" ? main.parent.name : null;
+          found.push({
+            nodeId: node.id,
+            nodeName: node.name,
+            topInstanceId: top.id,
+            topInstanceName: top.name,
+            pageName: getPageName(node),
+            depth,
+            oldComponentName: main ? main.name : null,
+            oldComponentSetName,
+            mainState
+          });
+        }
+        if (main && main.remote === true) {
+          descend = false;
+        }
+      }
+      if (descend && "children" in node && Array.isArray(node.children)) {
+        for (const child of node.children) {
+          await visit(child, top, depth + 1);
+        }
+      }
+    };
+    for (const top of topInstances) {
+      await visit(top, top, 0);
+    }
+    return found;
   }
   async function loadColorModes() {
     const operation = "load-color-modes";
@@ -1058,6 +1116,7 @@
       }
     }
     pendingMissingInstancePlans = plans;
+    pendingMissingInstanceScope = scope;
     if (plans.length > 0) {
       const wantedNames = getMissingComponentSetNames(plans);
       const targetLookup = await findComponentTargetsByNames(wantedNames, scope);
@@ -1084,6 +1143,7 @@
     const looseCleanable = loose.readyCount + loose.supportFallbackCount;
     const looseNeedsReviewOnly = loose.reviewCount - loose.supportFallbackCount;
     const looseSuffix = looseHasWork ? ` Plus ${looseCleanable} support layer${looseCleanable === 1 ? "" : "s"} to clean up${looseNeedsReviewOnly > 0 ? ` (${looseNeedsReviewOnly} need review)` : ""}.` : "";
+    pendingNestedSwapped = await collectNestedSwappedInstances(instances);
     if (plans.length === 0 && !looseHasWork) {
       return {
         createdAt: (/* @__PURE__ */ new Date()).toISOString(),
@@ -1115,6 +1175,125 @@
       }
     };
   }
+  function nestedShouldSkipNeutralMode(node, removedColor) {
+    if (normalizeToken(removedColor) !== "neutral") {
+      return false;
+    }
+    let current = node.parent;
+    while (current) {
+      if (SKIP_MISSING_INSTANCE_MODE_CONTEXTS.some((name) => normalizeToken(name) === normalizeToken(current.name))) {
+        return true;
+      }
+      current = current.parent;
+    }
+    return false;
+  }
+  async function applyNestedMissingInstanceFixes(scope, supportModeId, colorCollection, seed) {
+    const operation = "apply-missing-instances";
+    const fixed = [];
+    const failed = [];
+    const blockedNodeIds = /* @__PURE__ */ new Set();
+    let skippedModeCount = 0;
+    let seedList = seed;
+    if (seedList.length === 0) {
+      const topInstances = await getInstancesForScope(scope);
+      seedList = await collectNestedSwappedInstances(topInstances);
+    }
+    if (seedList.length === 0) {
+      return { fixedCount: 0, failedCount: 0, blockedCount: 0, skippedModeCount: 0, fixed, failed };
+    }
+    const affectedTopIds = Array.from(new Set(seedList.map((item) => item.topInstanceId)));
+    const allWantedNames = /* @__PURE__ */ new Set();
+    for (const item of seedList) {
+      if (item.oldComponentName) {
+        allWantedNames.add(normalizeToken(parseRemovedComponentName(item.oldComponentName).componentSetName));
+      }
+    }
+    const lookup = await findComponentTargetsByNames(allWantedNames, scope);
+    const MAX_PASSES = 6;
+    for (let t = 0; t < affectedTopIds.length; t += 1) {
+      const topId = affectedTopIds[t];
+      let pass = 0;
+      postOperationProgress({
+        operation,
+        message: "Updating nested instances...",
+        processed: t,
+        total: affectedTopIds.length
+      });
+      while (pass < MAX_PASSES) {
+        const topNode = await figma.getNodeByIdAsync(topId);
+        if (!topNode || topNode.type !== "INSTANCE") {
+          break;
+        }
+        const broken = (await collectNestedSwappedInstances([topNode])).filter((item) => !blockedNodeIds.has(item.nodeId));
+        if (broken.length === 0) {
+          break;
+        }
+        broken.sort((a, b) => a.depth - b.depth);
+        let fixedThisPass = 0;
+        for (const item of broken) {
+          const node = await figma.getNodeByIdAsync(item.nodeId);
+          if (!node || node.type !== "INSTANCE") {
+            continue;
+          }
+          const parsed = item.oldComponentName ? parseRemovedComponentName(item.oldComponentName) : null;
+          const removedColor = (parsed == null ? void 0 : parsed.removedColor) || null;
+          const targetResult = parsed ? findTargetComponent(lookup, parsed.componentSetName, parsed.nonColorTokens) : null;
+          const targetComponent = (targetResult == null ? void 0 : targetResult.component) || null;
+          const mode = removedColor ? findTargetMode(colorCollection, removedColor, supportModeId) : null;
+          if (!parsed || !removedColor || !targetComponent || !mode) {
+            blockedNodeIds.add(item.nodeId);
+            failed.push({
+              nodeId: item.nodeId,
+              nodeName: item.nodeName,
+              topInstanceName: item.topInstanceName,
+              reason: (targetResult == null ? void 0 : targetResult.reason) || "Could not resolve a target variant or color mode."
+            });
+            continue;
+          }
+          try {
+            const instanceNode = node;
+            instanceNode.swapComponent(targetComponent);
+            const skipMode = nestedShouldSkipNeutralMode(instanceNode, removedColor);
+            if (skipMode) {
+              skippedModeCount += 1;
+            } else {
+              const setExplicitVariableModeForCollection = instanceNode.setExplicitVariableModeForCollection.bind(instanceNode);
+              setExplicitVariableModeForCollection(colorCollection, mode.modeId);
+            }
+            fixed.push({
+              nodeId: item.nodeId,
+              nodeName: item.nodeName,
+              topInstanceName: item.topInstanceName,
+              targetComponentName: targetComponent.name,
+              targetModeName: skipMode ? null : mode.name
+            });
+            fixedThisPass += 1;
+          } catch (error) {
+            blockedNodeIds.add(item.nodeId);
+            failed.push({
+              nodeId: item.nodeId,
+              nodeName: item.nodeName,
+              topInstanceName: item.topInstanceName,
+              reason: error instanceof Error ? error.message : String(error)
+            });
+          }
+        }
+        if (fixedThisPass === 0) {
+          break;
+        }
+        pass += 1;
+      }
+    }
+    return {
+      fixedCount: fixed.length,
+      failedCount: failed.length,
+      blockedCount: blockedNodeIds.size,
+      skippedModeCount,
+      fixed,
+      failed
+    };
+  }
   async function applyMissingInstancePlans(supportModeId) {
     const operation = "apply-missing-instances";
     const colorCollection = await getColorCollection();
@@ -1130,7 +1309,7 @@
       };
     }
     const plans = pendingMissingInstancePlans.filter((plan) => plan.status === "ready");
-    if (plans.length === 0 && pendingLegacyColorRebindPlans.length === 0) {
+    if (plans.length === 0 && pendingLegacyColorRebindPlans.length === 0 && pendingMissingInstanceScope === null) {
       return {
         createdAt: (/* @__PURE__ */ new Date()).toISOString(),
         operation,
@@ -1139,6 +1318,7 @@
         details: {}
       };
     }
+    const nestedScope = pendingMissingInstanceScope;
     const fixed = [];
     const failed = [];
     let skippedModeCount = 0;
@@ -1213,20 +1393,28 @@
       });
     }
     pendingMissingInstancePlans = [];
+    postOperationProgress({ operation, message: "Updating nested instances..." });
+    const nested = nestedScope ? await applyNestedMissingInstanceFixes(nestedScope, supportModeId, colorCollection, pendingNestedSwapped) : { fixedCount: 0, failedCount: 0, blockedCount: 0, skippedModeCount: 0, fixed: [], failed: [] };
+    pendingMissingInstanceScope = null;
+    pendingNestedSwapped = [];
     const cleanup = await applyLegacyColorRebindPlans(supportModeId);
-    if (fixed.length > 0 || cleanup.reboundCount > 0 || cleanup.modeSetCount > 0) {
+    if (fixed.length > 0 || nested.fixedCount > 0 || cleanup.reboundCount > 0 || cleanup.modeSetCount > 0) {
       figma.commitUndo();
     }
     const cleanupSuffix = cleanup.nodeFixedCount > 0 ? ` Cleaned up ${cleanup.reboundCount} support binding${cleanup.reboundCount === 1 ? "" : "s"} on ${cleanup.nodeFixedCount} layer${cleanup.nodeFixedCount === 1 ? "" : "s"}.` : "";
+    const nestedSuffix = nested.fixedCount > 0 || nested.failedCount > 0 ? ` Fixed ${nested.fixedCount} nested instance${nested.fixedCount === 1 ? "" : "s"}${nested.failedCount > 0 ? `, ${nested.failedCount} could not be resolved` : ""}.` : "";
     return {
       createdAt: (/* @__PURE__ */ new Date()).toISOString(),
       operation,
       status: failed.length + cleanup.failedCount > 0 ? "error" : "success",
-      message: `Fixed ${fixed.length} missing instance${fixed.length === 1 ? "" : "s"}${failed.length > 0 ? `, failed ${failed.length}` : ""}.${cleanupSuffix}`,
+      message: `Fixed ${fixed.length} missing instance${fixed.length === 1 ? "" : "s"}${failed.length > 0 ? `, failed ${failed.length}` : ""}.${nestedSuffix}${cleanupSuffix}`,
       details: {
         fixedCount: fixed.length,
         failedCount: failed.length,
         skippedModeCount,
+        nestedFixedCount: nested.fixedCount,
+        nestedFailedCount: nested.failedCount,
+        nestedSkippedModeCount: nested.skippedModeCount,
         supportLayerFixedCount: cleanup.nodeFixedCount,
         supportBindingReboundCount: cleanup.reboundCount,
         supportLayerFailedCount: cleanup.failedCount,

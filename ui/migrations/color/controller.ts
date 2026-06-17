@@ -434,44 +434,43 @@ export function createColorController() {
   function renderMissingDetails(payload) {
     const plans = payload.details && Array.isArray(payload.details.plans) ? payload.details.plans : [];
     const blockedPlans = plans.filter((plan) => plan.status === 'blocked');
-    if (blockedPlans.length === 0) {
-      return;
-    }
 
-    const heading = document.createElement('div');
-    heading.className = 'detail-meta';
-    heading.textContent = `Needs review (${blockedPlans.length})`;
-    activeDetails.appendChild(heading);
+    if (blockedPlans.length > 0) {
+      const heading = document.createElement('div');
+      heading.className = 'detail-meta';
+      heading.textContent = `Needs review (${blockedPlans.length})`;
+      activeDetails.appendChild(heading);
 
-    for (const plan of blockedPlans.slice(0, 20)) {
-      const item = document.createElement('div');
-      item.className = 'detail-item';
+      for (const plan of blockedPlans.slice(0, 20)) {
+        const item = document.createElement('div');
+        item.className = 'detail-item';
 
-      const title = document.createElement('div');
-      title.className = 'detail-title';
-      title.textContent = plan.instanceName || 'Unnamed instance';
+        const title = document.createElement('div');
+        title.className = 'detail-title';
+        title.textContent = plan.instanceName || 'Unnamed instance';
 
-      const meta = document.createElement('div');
-      meta.className = 'detail-meta';
-      meta.textContent = [
-        `Page: ${plan.pageName || 'Unknown'}`,
-        `Parent: ${plan.parentName || 'Unknown'}`,
-        `Old variant: ${plan.sourceComponentName || 'Unknown'}`,
-        `Old color: ${formatOptionalValue(plan.removedColor)}`,
-        `Expected variant: ${formatTargetPropertyValues(plan.targetPropertyValues)}`,
-        `Possible matches: ${typeof plan.targetCandidateCount === 'number' ? plan.targetCandidateCount : 'Unknown'}`,
-        `Why: ${plan.reason || 'Unknown'}`,
-      ].join(' | ');
+        const meta = document.createElement('div');
+        meta.className = 'detail-meta';
+        meta.textContent = [
+          `Page: ${plan.pageName || 'Unknown'}`,
+          `Parent: ${plan.parentName || 'Unknown'}`,
+          `Old variant: ${plan.sourceComponentName || 'Unknown'}`,
+          `Old color: ${formatOptionalValue(plan.removedColor)}`,
+          `Expected variant: ${formatTargetPropertyValues(plan.targetPropertyValues)}`,
+          `Possible matches: ${typeof plan.targetCandidateCount === 'number' ? plan.targetCandidateCount : 'Unknown'}`,
+          `Why: ${plan.reason || 'Unknown'}`,
+        ].join(' | ');
 
-      item.append(title, meta);
-      activeDetails.appendChild(item);
-    }
+        item.append(title, meta);
+        activeDetails.appendChild(item);
+      }
 
-    if (blockedPlans.length > 20) {
-      const more = document.createElement('div');
-      more.className = 'detail-meta';
-      more.textContent = `${blockedPlans.length - 20} more instances need review but are not shown.`;
-      activeDetails.appendChild(more);
+      if (blockedPlans.length > 20) {
+        const more = document.createElement('div');
+        more.className = 'detail-meta';
+        more.textContent = `${blockedPlans.length - 20} more instances need review but are not shown.`;
+        activeDetails.appendChild(more);
+      }
     }
   }
 
@@ -484,45 +483,43 @@ export function createColorController() {
     }
 
     const flagged = plans.filter((plan) => plan.status === 'blocked' || plan.status === 'review');
-    if (flagged.length === 0) {
-      return;
-    }
+    if (flagged.length > 0) {
+      const heading = document.createElement('div');
+      heading.className = 'detail-meta';
+      heading.textContent = `Needs review (${flagged.length})`;
+      activeDetails.appendChild(heading);
 
-    const heading = document.createElement('div');
-    heading.className = 'detail-meta';
-    heading.textContent = `Needs review (${flagged.length})`;
-    activeDetails.appendChild(heading);
+      for (const plan of flagged.slice(0, 20)) {
+        const item = document.createElement('div');
+        item.className = 'detail-item';
 
-    for (const plan of flagged.slice(0, 20)) {
-      const item = document.createElement('div');
-      item.className = 'detail-item';
+        const title = document.createElement('div');
+        title.className = 'detail-title';
+        title.textContent = plan.instanceName || 'Unnamed instance';
 
-      const title = document.createElement('div');
-      title.className = 'detail-title';
-      title.textContent = plan.instanceName || 'Unnamed instance';
+        const meta = document.createElement('div');
+        meta.className = 'detail-meta';
+        meta.textContent = [
+          `Status: ${plan.status}`,
+          `Page: ${plan.pageName || 'Unknown'}`,
+          `Parent: ${plan.parentName || 'Unknown'}`,
+          `Component: ${plan.oldComponentSetName || 'Unknown'}`,
+          `Old color: ${formatOptionalValue(plan.oldColorValue)}`,
+          `Legacy mode: ${plan.legacyModeCollectionName ? plan.legacyModeCollectionName + ' / ' + plan.legacyModeName : 'None'}`,
+          `Target mode: ${plan.targetModeName || 'Default'}`,
+          `Why: ${plan.reason || 'Unknown'}`,
+        ].join(' | ');
 
-      const meta = document.createElement('div');
-      meta.className = 'detail-meta';
-      meta.textContent = [
-        `Status: ${plan.status}`,
-        `Page: ${plan.pageName || 'Unknown'}`,
-        `Parent: ${plan.parentName || 'Unknown'}`,
-        `Component: ${plan.oldComponentSetName || 'Unknown'}`,
-        `Old color: ${formatOptionalValue(plan.oldColorValue)}`,
-        `Legacy mode: ${plan.legacyModeCollectionName ? plan.legacyModeCollectionName + ' / ' + plan.legacyModeName : 'None'}`,
-        `Target mode: ${plan.targetModeName || 'Default'}`,
-        `Why: ${plan.reason || 'Unknown'}`,
-      ].join(' | ');
+        item.append(title, meta);
+        activeDetails.appendChild(item);
+      }
 
-      item.append(title, meta);
-      activeDetails.appendChild(item);
-    }
-
-    if (flagged.length > 20) {
-      const more = document.createElement('div');
-      more.className = 'detail-meta';
-      more.textContent = `${flagged.length - 20} more instances need review but are not shown.`;
-      activeDetails.appendChild(more);
+      if (flagged.length > 20) {
+        const more = document.createElement('div');
+        more.className = 'detail-meta';
+        more.textContent = `${flagged.length - 20} more instances need review but are not shown.`;
+        activeDetails.appendChild(more);
+      }
     }
   }
 
@@ -653,7 +650,12 @@ export function createColorController() {
     }
 
     if (payload.operation === 'apply-missing-instances') {
-      return `Updated ${details.fixedCount || 0} instances. Left color mode unchanged for ${details.skippedModeCount || 0}. ${details.failedCount || 0} update${details.failedCount === 1 ? '' : 's'} failed.${supportLayerApplySuffix(details)}`;
+      const nestedFixed = details.nestedFixedCount || 0;
+      const nestedFailed = details.nestedFailedCount || 0;
+      const nestedPart = nestedFixed > 0 || nestedFailed > 0
+        ? ` Fixed ${nestedFixed} nested instance${nestedFixed === 1 ? '' : 's'}${nestedFailed > 0 ? `, ${nestedFailed} unresolved` : ''}.`
+        : '';
+      return `Updated ${details.fixedCount || 0} instances. Left color mode unchanged for ${details.skippedModeCount || 0}. ${details.failedCount || 0} update${details.failedCount === 1 ? '' : 's'} failed.${nestedPart}${supportLayerApplySuffix(details)}`;
     }
 
     if (payload.operation === 'scan-library-stuck-instances') {

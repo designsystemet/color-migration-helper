@@ -130,6 +130,13 @@ const SKIP_MISSING_INSTANCE_MODE_CONTEXTS = ['TableColumn'];
 
 let pendingUnsupportedVariantPlans: ComponentSetRemovalPlan[] = [];
 let pendingMissingInstancePlans: MissingInstancePlan[] = [];
+// Scope of the last missing-instance scan, so the apply step can re-walk the
+// same area for the nested-instance fixing pass. null = no scan run yet.
+let pendingMissingInstanceScope: FixScope | null = null;
+// Nested broken instances found by the last scan. Seeds the apply step's
+// nested-fix pass (affected top instances + target names) so it does not have
+// to re-walk the whole file just to rediscover them.
+let pendingNestedSwapped: NestedSwappedInstance[] = [];
 let pendingLibraryStuckInstancePlans: LibraryStuckInstancePlan[] = [];
 let pendingLegacyColorRebindPlans: LegacyColorRebindPlan[] = [];
 
@@ -764,6 +771,112 @@ async function getInstancesForScope(scope: FixScope): Promise<InstanceNode[]> {
   return instances;
 }
 
+// A nested instance (one living inside another instance) whose pinned main
+// component no longer resolves to a live variant. This happens when the
+// migration deletes the local variant the nested instance points to (e.g. an
+// Avatar pinned to the removed `support` variant inside an AvatarStack). There
+// is no swap override in this case — the breakage is variant deletion — so the
+// only reliable signal is the resolved main-component state. Our normal scans
+// stop at instance boundaries (for performance), so they never see these.
+type NestedSwappedInstance = {
+  nodeId: string;
+  nodeName: string;
+  topInstanceId: string;
+  topInstanceName: string | null;
+  pageName: string | null;
+  // Distance from the top instance — used to fix shallowest-first so an outer
+  // swap can repair/replace inner ones before we try them.
+  depth: number;
+  oldComponentName: string | null;
+  oldComponentSetName: string | null;
+  // Why it is broken: its pinned main component is gone (missing) or is a
+  // removed local variant (detached-local).
+  mainState: 'missing' | 'detached-local';
+};
+
+// Read-only overview: locate nested instances whose pinned variant was deleted
+// by the migration. Detection is by resolved main-component state, NOT by swap
+// overrides — these instances were never swapped, so `.overrides` does not list
+// them (and deep ones don't appear there at all). We therefore walk into
+// instance subtrees and check each instance's main.
+//
+// To stay bounded we only descend into instances whose main is local
+// (remote === false) or already broken: a clean remote instance's internals
+// come from the migrated library and cannot hold a deleted *local* variant.
+// Does not mutate anything.
+const NESTED_SWAPPED_MAX_NODES = 50000;
+
+async function collectNestedSwappedInstances(topInstances: InstanceNode[]): Promise<NestedSwappedInstance[]> {
+  const found: NestedSwappedInstance[] = [];
+  const reportedNodeIds = new Set<string>();
+  let walked = 0;
+
+  const visit = async (node: SceneNode, top: InstanceNode, depth: number): Promise<void> => {
+    if (walked > NESTED_SWAPPED_MAX_NODES) {
+      return;
+    }
+    walked += 1;
+
+    let descend = true;
+
+    // Skip the root (depth 0): top-level instances are handled by the main
+    // scans. We only report instances nested inside them.
+    if (node.type === 'INSTANCE' && depth > 0) {
+      let main: ComponentNode | null = null;
+      try {
+        main = await node.getMainComponentAsync();
+      } catch {
+        main = null;
+      }
+
+      let mainState: NestedSwappedInstance['mainState'] | 'ok';
+      if (!main) {
+        mainState = 'missing';
+      } else if (main.remote === false && !main.parent) {
+        mainState = 'detached-local';
+      } else {
+        mainState = 'ok';
+      }
+
+      if ((mainState === 'missing' || mainState === 'detached-local') && !reportedNodeIds.has(node.id)) {
+        reportedNodeIds.add(node.id);
+        const oldComponentSetName = main && main.parent && main.parent.type === 'COMPONENT_SET'
+          ? main.parent.name
+          : null;
+        found.push({
+          nodeId: node.id,
+          nodeName: node.name,
+          topInstanceId: top.id,
+          topInstanceName: top.name,
+          pageName: getPageName(node),
+          depth,
+          oldComponentName: main ? main.name : null,
+          oldComponentSetName,
+          mainState,
+        });
+      }
+
+      // A clean remote instance's subtree comes from the migrated library and
+      // cannot contain a deleted local variant — no need to pay to walk it.
+      if (main && main.remote === true) {
+        descend = false;
+      }
+    }
+
+    if (descend && 'children' in node && Array.isArray(node.children)) {
+      for (const child of node.children) {
+        await visit(child, top, depth + 1);
+      }
+    }
+  };
+
+  for (const top of topInstances) {
+    await visit(top, top, 0);
+  }
+
+  return found;
+}
+
 async function loadColorModes(): Promise<OperationResultPayload> {
   const operation = 'load-color-modes';
   const collection = await getColorCollection();
@@ -1384,6 +1497,7 @@ async function scanMissingInstances(scope: FixScope, supportModeId: string | nul
   }
 
   pendingMissingInstancePlans = plans;
+  pendingMissingInstanceScope = scope;
 
   if (plans.length > 0) {
     const wantedNames = getMissingComponentSetNames(plans);
@@ -1426,6 +1540,11 @@ async function scanMissingInstances(scope: FixScope, supportModeId: string | nul
     ? ` Plus ${looseCleanable} support layer${looseCleanable === 1 ? '' : 's'} to clean up${looseNeedsReviewOnly > 0 ? ` (${looseNeedsReviewOnly} need review)` : ''}.`
     : '';
 
+  // Walk for broken nested instances over the same scope and store the result
+  // as a seed for the apply step (so it does not re-walk the whole file). Not
+  // surfaced in the scan result — the apply step fixes them.
+  pendingNestedSwapped = await collectNestedSwappedInstances(instances);
+
   if (plans.length === 0 && !looseHasWork) {
     return {
       createdAt: new Date().toISOString(),
@@ -1462,6 +1581,180 @@ async function scanMissingInstances(scope: FixScope, supportModeId: string | nul
   };
 }
 
+// Mirror of shouldSkipModeForMissingInstance for instances nested inside other
+// instances. getComponentContext finds no component ancestor across instance
+// boundaries, so check ancestor names directly: leave neutral mode unset when
+// the nested instance sits inside a context we intentionally skip (TableColumn).
+function nestedShouldSkipNeutralMode(node: SceneNode, removedColor: string): boolean {
+  if (normalizeToken(removedColor) !== 'neutral') {
+    return false;
+  }
+  let current: BaseNode | null = node.parent;
+  while (current) {
+    if (SKIP_MISSING_INSTANCE_MODE_CONTEXTS.some((name) => normalizeToken(name) === normalizeToken(current!.name))) {
+      return true;
+    }
+    current = current.parent;
+  }
+  return false;
+}
+
+type NestedFixResult = {
+  fixedCount: number;
+  failedCount: number;
+  blockedCount: number;
+  skippedModeCount: number;
+  fixed: JsonValue[];
+  failed: JsonValue[];
+};
+
+// Fix instances nested inside other instances whose pinned variant was removed.
+// Uses the same target-resolution as top-level missing instances (parse old
+// name → match current variant → swap → set mode), but applies it per top
+// instance in shallowest-first passes: swapping an outer instance re-materializes
+// its subtree (often repairing inner ones and always changing their node ids),
+// so we re-walk after each pass until nothing fixable remains. Read at apply
+// time, not from a stored plan, because those ids go stale after each swap.
+async function applyNestedMissingInstanceFixes(
+  scope: FixScope,
+  supportModeId: string | null,
+  colorCollection: VariableCollection,
+  seed: NestedSwappedInstance[],
+): Promise<NestedFixResult> {
+  const operation = 'apply-missing-instances';
+  const fixed: JsonValue[] = [];
+  const failed: JsonValue[] = [];
+  const blockedNodeIds = new Set<string>();
+  let skippedModeCount = 0;
+
+  // Seed from the scan's overview when available (the common path); only re-walk
+  // the whole scope if we have no seed.
+  let seedList = seed;
+  if (seedList.length === 0) {
+    const topInstances = await getInstancesForScope(scope);
+    seedList = await collectNestedSwappedInstances(topInstances);
+  }
+  if (seedList.length === 0) {
+    return { fixedCount: 0, failedCount: 0, blockedCount: 0, skippedModeCount: 0, fixed, failed };
+  }
+
+  const affectedTopIds = Array.from(new Set(seedList.map((item) => item.topInstanceId)));
+
+  // Build the target-component lookup ONCE and reuse it across every pass and
+  // top instance. This was the dominant cost on whole-file runs — the lookup
+  // can walk all pages, and we were rebuilding it per pass per top instance.
+  // The target component sets do not change during apply, so caching is safe.
+  const allWantedNames = new Set<string>();
+  for (const item of seedList) {
+    if (item.oldComponentName) {
+      allWantedNames.add(normalizeToken(parseRemovedComponentName(item.oldComponentName).componentSetName));
+    }
+  }
+  const lookup = await findComponentTargetsByNames(allWantedNames, scope);
+  const MAX_PASSES = 6;
+
+  for (let t = 0; t < affectedTopIds.length; t += 1) {
+    const topId = affectedTopIds[t];
+    let pass = 0;
+
+    postOperationProgress({
+      operation,
+      message: 'Updating nested instances...',
+      processed: t,
+      total: affectedTopIds.length,
+    });
+
+    while (pass < MAX_PASSES) {
+      const topNode = await figma.getNodeByIdAsync(topId);
+      if (!topNode || topNode.type !== 'INSTANCE') {
+        break;
+      }
+
+      const broken = (await collectNestedSwappedInstances([topNode]))
+        .filter((item) => !blockedNodeIds.has(item.nodeId));
+      if (broken.length === 0) {
+        break;
+      }
+
+      // Shallowest first: an outer swap can repair/replace inner ones.
+      broken.sort((a, b) => a.depth - b.depth);
+
+      let fixedThisPass = 0;
+      for (const item of broken) {
+        const node = await figma.getNodeByIdAsync(item.nodeId);
+        if (!node || node.type !== 'INSTANCE') {
+          // Gone this pass — its id changed because an ancestor was swapped.
+          // It will reappear (or be resolved) on the next pass's fresh walk.
+          continue;
+        }
+
+        const parsed = item.oldComponentName ? parseRemovedComponentName(item.oldComponentName) : null;
+        const removedColor = parsed?.removedColor || null;
+        const targetResult = parsed
+          ? findTargetComponent(lookup, parsed.componentSetName, parsed.nonColorTokens)
+          : null;
+        const targetComponent = targetResult?.component || null;
+        const mode = removedColor ? findTargetMode(colorCollection, removedColor, supportModeId) : null;
+
+        if (!parsed || !removedColor || !targetComponent || !mode) {
+          blockedNodeIds.add(item.nodeId);
+          failed.push({
+            nodeId: item.nodeId,
+            nodeName: item.nodeName,
+            topInstanceName: item.topInstanceName,
+            reason: targetResult?.reason || 'Could not resolve a target variant or color mode.',
+          });
+          continue;
+        }
+
+        try {
+          const instanceNode = node;
+          instanceNode.swapComponent(targetComponent);
+
+          const skipMode = nestedShouldSkipNeutralMode(instanceNode, removedColor);
+          if (skipMode) {
+            skippedModeCount += 1;
+          } else {
+            const setExplicitVariableModeForCollection = instanceNode.setExplicitVariableModeForCollection.bind(instanceNode);
+            setExplicitVariableModeForCollection(colorCollection, mode.modeId);
+          }
+
+          fixed.push({
+            nodeId: item.nodeId,
+            nodeName: item.nodeName,
+            topInstanceName: item.topInstanceName,
+            targetComponentName: targetComponent.name,
+            targetModeName: skipMode ? null : mode.name,
+          });
+          fixedThisPass += 1;
+        } catch (error) {
+          blockedNodeIds.add(item.nodeId);
+          failed.push({
+            nodeId: item.nodeId,
+            nodeName: item.nodeName,
+            topInstanceName: item.topInstanceName,
+            reason: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+
+      if (fixedThisPass === 0) {
+        break;
+      }
+      pass += 1;
+    }
+  }
+
+  return {
+    fixedCount: fixed.length,
+    failedCount: failed.length,
+    blockedCount: blockedNodeIds.size,
+    skippedModeCount,
+    fixed,
+    failed,
+  };
+}
+
 async function applyMissingInstancePlans(supportModeId: string | null): Promise<OperationResultPayload> {
   const operation = 'apply-missing-instances';
   const colorCollection = await getColorCollection();
@@ -1479,7 +1772,10 @@ async function applyMissingInstancePlans(supportModeId: string | null): Promise<
   }
 
   const plans = pendingMissingInstancePlans.filter((plan) => plan.status === 'ready');
-  if (plans.length === 0 && pendingLegacyColorRebindPlans.length === 0) {
+  // null scope means no scan has run this session — that's the real "apply
+  // before scan" case. After any scan we proceed even with no ready top-level
+  // plans, because the nested-instance fix re-walks the scope itself.
+  if (plans.length === 0 && pendingLegacyColorRebindPlans.length === 0 && pendingMissingInstanceScope === null) {
     return {
       createdAt: new Date().toISOString(),
       operation,
@@ -1488,6 +1784,8 @@ async function applyMissingInstancePlans(supportModeId: string | null): Promise<
       details: {},
     };
   }
+
+  const nestedScope = pendingMissingInstanceScope;
 
   const fixed: JsonValue[] = [];
   const failed: JsonValue[] = [];
@@ -1581,27 +1879,43 @@ async function applyMissingInstancePlans(supportModeId: string | null): Promise<
 
   pendingMissingInstancePlans = [];
 
+  // Fix instances nested inside other instances (not reachable by the top-level
+  // scan). Run after the top-level apply so masters are already updated, then
+  // swapping a nested instance pulls a correct subtree. Re-walks the scope.
+  postOperationProgress({ operation, message: 'Updating nested instances...' });
+  const nested: NestedFixResult = nestedScope
+    ? await applyNestedMissingInstanceFixes(nestedScope, supportModeId, colorCollection, pendingNestedSwapped)
+    : { fixedCount: 0, failedCount: 0, blockedCount: 0, skippedModeCount: 0, fixed: [], failed: [] };
+  pendingMissingInstanceScope = null;
+  pendingNestedSwapped = [];
+
   // Folded-in support cleanup: rebind loose Support color layers found during
   // scan, using the same support fallback mode chosen for the instances.
   const cleanup = await applyLegacyColorRebindPlans(supportModeId);
 
-  if (fixed.length > 0 || cleanup.reboundCount > 0 || cleanup.modeSetCount > 0) {
+  if (fixed.length > 0 || nested.fixedCount > 0 || cleanup.reboundCount > 0 || cleanup.modeSetCount > 0) {
     figma.commitUndo();
   }
 
   const cleanupSuffix = cleanup.nodeFixedCount > 0
     ? ` Cleaned up ${cleanup.reboundCount} support binding${cleanup.reboundCount === 1 ? '' : 's'} on ${cleanup.nodeFixedCount} layer${cleanup.nodeFixedCount === 1 ? '' : 's'}.`
     : '';
+  const nestedSuffix = nested.fixedCount > 0 || nested.failedCount > 0
+    ? ` Fixed ${nested.fixedCount} nested instance${nested.fixedCount === 1 ? '' : 's'}${nested.failedCount > 0 ? `, ${nested.failedCount} could not be resolved` : ''}.`
+    : '';
 
   return {
     createdAt: new Date().toISOString(),
     operation,
     status: failed.length + cleanup.failedCount > 0 ? 'error' : 'success',
-    message: `Fixed ${fixed.length} missing instance${fixed.length === 1 ? '' : 's'}${failed.length > 0 ? `, failed ${failed.length}` : ''}.${cleanupSuffix}`,
+    message: `Fixed ${fixed.length} missing instance${fixed.length === 1 ? '' : 's'}${failed.length > 0 ? `, failed ${failed.length}` : ''}.${nestedSuffix}${cleanupSuffix}`,
     details: {
       fixedCount: fixed.length,
       failedCount: failed.length,
       skippedModeCount,
+      nestedFixedCount: nested.fixedCount,
+      nestedFailedCount: nested.failedCount,
+      nestedSkippedModeCount: nested.skippedModeCount,
       supportLayerFixedCount: cleanup.nodeFixedCount,
       supportBindingReboundCount: cleanup.reboundCount,
       supportLayerFailedCount: cleanup.failedCount,
