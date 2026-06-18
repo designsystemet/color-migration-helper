@@ -411,19 +411,25 @@
     width: min(280px, calc(100vw - 48px));
   }
 
-  .spinner {
-    width: 24px;
-    height: 24px;
-    border: 3px solid var(--figma-color-border, #d9d9d9);
-    border-top-color: var(--figma-color-bg-brand, #0d99ff);
-    border-radius: 999px;
-    animation: spin 0.8s linear infinite;
+  .busy-phase {
+    font-weight: 600;
+    text-align: center;
   }
 
-  @keyframes spin {
-    to {
-      transform: rotate(360deg);
-    }
+  .busy-bar {
+    width: 100%;
+    height: 6px;
+    border-radius: 999px;
+    background: var(--figma-color-bg-secondary, #ebebeb);
+    overflow: hidden;
+  }
+
+  .busy-bar-fill {
+    height: 100%;
+    width: 0%;
+    border-radius: 999px;
+    background: var(--figma-color-bg-brand, #0d99ff);
+    transition: width 0.2s ease;
   }
 
 </style>
@@ -476,8 +482,7 @@
 
       <div class="segmented" role="tablist">
         <button class="segment active" data-step="prime" role="tab" aria-selected="true" aria-controls="step-prime" id="tab-prime">1. Prepare</button>
-        <button class="segment" data-step="variants" role="tab" aria-selected="false" aria-controls="step-variants" id="tab-variants">2. Remove variants</button>
-        <button class="segment" data-step="instances" role="tab" aria-selected="false" aria-controls="step-instances" id="tab-instances">3. Fix in library</button>
+        <button class="segment" data-step="run" role="tab" aria-selected="false" aria-controls="step-run" id="tab-run">2. Run migration</button>
       </div>
 
       <section class="step active" id="step-prime" role="tabpanel" aria-labelledby="tab-prime" tabindex="0">
@@ -493,54 +498,25 @@
         </div>
       </section>
 
-      <section class="step" id="step-variants" role="tabpanel" aria-labelledby="tab-variants" tabindex="0">
+      <section class="step" id="step-run" role="tabpanel" aria-labelledby="tab-run" tabindex="0">
         <section class="panel">
-          <div class="panel-title">Remove variants</div>
-          <p>Remove old color variants and update variant names. Alert and ValidationMessage are left unchanged.</p>
-          <div class="toolbar" style="margin-top: 10px;">
-            <button class="primary" id="scanVariants">Scan variants</button>
-          </div>
-        </section>
-        <section class="panel is-hidden" id="variantsResultPanel">
-          <div class="panel-title">Variant scan result</div>
-          <div class="summary-line" id="variantsSummary"></div>
-          <div class="details-list" id="variantsDetails"></div>
-          <div class="toolbar" style="margin-top: 10px;">
-            <button class="primary" id="applyVariants" disabled>Remove and update variants</button>
-          </div>
-        </section>
-      </section>
-
-      <section class="step" id="step-instances" role="tabpanel" aria-labelledby="tab-instances" tabindex="0">
-        <section class="panel">
-          <div class="panel-title">Update missing instances</div>
+          <div class="panel-title">Run migration</div>
+          <p>Removes old color variants, updates components, and swaps every affected instance (including nested ones) across the whole file. First run "1. Prepare" and make sure the new tokens are regenerated and published (the Color collection must have info, warning, danger and success modes).</p>
           <div class="control-row stacked" style="margin-top: 10px;">
-            <label>
-              Scope
-              <select id="fixScope">
-                <option value="selection">Selection</option>
-                <option value="page">Current page</option>
-                <option value="file">Whole file</option>
-              </select>
-            </label>
             <label>
               Use this mode for old support variants
               <select id="supportMode"></select>
             </label>
           </div>
           <div class="toolbar" style="margin-top: 10px;">
-            <button class="primary" id="scanMissing">Scan instances</button>
+            <button class="primary" id="runMigration">Run migration</button>
           </div>
         </section>
-        <section class="panel is-hidden" id="instancesResultPanel">
-          <div class="panel-title">Instance scan result</div>
-          <div class="summary-line" id="instancesSummary"></div>
-          <div class="details-list" id="instancesDetails"></div>
-          <div class="toolbar" style="margin-top: 10px;">
-            <button class="primary" id="applyMissing" disabled>Update instances</button>
-          </div>
+        <section class="panel is-hidden" id="runResultPanel">
+          <div class="panel-title">Result</div>
+          <div class="summary-line" id="runSummary"></div>
+          <div class="details-list" id="runDetails"></div>
         </section>
-
       </section>
     </section>
 
@@ -601,7 +577,8 @@
 
   <div class="busy-overlay" id="busyOverlay">
     <div class="busy-card">
-      <div class="spinner"></div>
+      <div class="busy-phase is-hidden" id="busyPhase"></div>
+      <div class="busy-bar" id="busyBar"><div class="busy-bar-fill" id="busyBarFill"></div></div>
       <div class="status-line" id="busyText">Working...</div>
     </div>
   </div>

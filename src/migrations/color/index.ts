@@ -3,6 +3,7 @@ import type {
   FixScope,
   JsonValue,
   MigrationModule,
+  OperationProgressPayload,
   OperationResultPayload,
 } from '../../core/types';
 
@@ -806,7 +807,10 @@ type NestedSwappedInstance = {
 // Does not mutate anything.
 const NESTED_SWAPPED_MAX_NODES = 50000;
 
-async function collectNestedSwappedInstances(topInstances: InstanceNode[]): Promise<NestedSwappedInstance[]> {
+async function collectNestedSwappedInstances(
+  topInstances: InstanceNode[],
+  reportOperation?: string,
+): Promise<NestedSwappedInstance[]> {
   const found: NestedSwappedInstance[] = [];
   const reportedNodeIds = new Set<string>();
   let walked = 0;
@@ -816,6 +820,16 @@ async function collectNestedSwappedInstances(topInstances: InstanceNode[]): Prom
       return;
     }
     walked += 1;
+
+    // Periodically report progress on the long full-file walk so the loader
+    // keeps moving instead of sitting silent. No reliable total, so we surface
+    // the running count and found-so-far in the message.
+    if (reportOperation && walked % 400 === 0) {
+      await reportProgress({
+        operation: reportOperation,
+        message: `Scanning nested instances... (${walked} checked, ${found.length} found)`,
+      });
+    }
 
     let descend = true;
 
@@ -914,14 +928,14 @@ async function scanUnsupportedVariants(): Promise<OperationResultPayload> {
   const operation = 'scan-unsupported-variants';
 
   pendingUnsupportedVariantPlans = [];
-  postOperationProgress({
+  await reportProgress({
     operation,
     message: 'Loading file...',
   });
 
   const componentSets = await getAllComponentSets();
 
-  postOperationProgress({
+  await reportProgress({
     operation,
     message: 'Scanning variants...',
     processed: 0,
@@ -1034,7 +1048,7 @@ async function scanUnsupportedVariants(): Promise<OperationResultPayload> {
     }
 
     if ((index + 1) % 10 === 0 || index + 1 === componentSets.length) {
-      postOperationProgress({
+      await reportProgress({
         operation,
         message: 'Scanning variants...',
         processed: index + 1,
@@ -1143,7 +1157,7 @@ async function collapseSingleVariantComponentSet(plan: ComponentSetRemovalPlan):
   }
 }
 
-async function applyUnsupportedVariantPlans(): Promise<OperationResultPayload> {
+async function applyUnsupportedVariantPlans(commitUndoStep = true): Promise<OperationResultPayload> {
   const operation = 'apply-unsupported-variants';
   const plans = pendingUnsupportedVariantPlans;
 
@@ -1163,7 +1177,7 @@ async function applyUnsupportedVariantPlans(): Promise<OperationResultPayload> {
   const renamed: JsonValue[] = [];
   const failed: JsonValue[] = [];
 
-  postOperationProgress({
+  await reportProgress({
     operation,
     message: 'Removing and updating variants...',
     processed,
@@ -1208,7 +1222,7 @@ async function applyUnsupportedVariantPlans(): Promise<OperationResultPayload> {
       processed += 1;
     }
 
-    postOperationProgress({
+    await reportProgress({
       operation,
       message: 'Removing and updating variants...',
       processed,
@@ -1252,7 +1266,7 @@ async function applyUnsupportedVariantPlans(): Promise<OperationResultPayload> {
       processed += 1;
     }
 
-    postOperationProgress({
+    await reportProgress({
       operation,
       message: 'Removing and updating variants...',
       processed,
@@ -1276,7 +1290,7 @@ async function applyUnsupportedVariantPlans(): Promise<OperationResultPayload> {
   pendingUnsupportedVariantPlans = [];
 
   const status = failed.length > 0 ? 'error' : 'success';
-  if (status === 'success') {
+  if (status === 'success' && commitUndoStep) {
     figma.commitUndo();
   }
 
@@ -1421,7 +1435,7 @@ async function scanMissingInstances(scope: FixScope, supportModeId: string | nul
 
   pendingMissingInstancePlans = [];
 
-  postOperationProgress({
+  await reportProgress({
     operation,
     message: 'Loading color modes...',
   });
@@ -1440,7 +1454,7 @@ async function scanMissingInstances(scope: FixScope, supportModeId: string | nul
     };
   }
 
-  postOperationProgress({
+  await reportProgress({
     operation,
     message: getScopeLoadingMessage(scope),
   });
@@ -1487,7 +1501,7 @@ async function scanMissingInstances(scope: FixScope, supportModeId: string | nul
     }
 
     if ((index + 1) % 10 === 0 || index + 1 === instances.length) {
-      postOperationProgress({
+      await reportProgress({
         operation,
         message: 'Scanning instances...',
         processed: index + 1,
@@ -1542,8 +1556,9 @@ async function scanMissingInstances(scope: FixScope, supportModeId: string | nul
 
   // Walk for broken nested instances over the same scope and store the result
   // as a seed for the apply step (so it does not re-walk the whole file). Not
-  // surfaced in the scan result — the apply step fixes them.
-  pendingNestedSwapped = await collectNestedSwappedInstances(instances);
+  // surfaced in the scan result — the apply step fixes them. Reports progress
+  // because this full-file walk is the slowest, previously-silent step.
+  pendingNestedSwapped = await collectNestedSwappedInstances(instances, operation);
 
   if (plans.length === 0 && !looseHasWork) {
     return {
@@ -1657,7 +1672,7 @@ async function applyNestedMissingInstanceFixes(
     const topId = affectedTopIds[t];
     let pass = 0;
 
-    postOperationProgress({
+    await reportProgress({
       operation,
       message: 'Updating nested instances...',
       processed: t,
@@ -1755,7 +1770,7 @@ async function applyNestedMissingInstanceFixes(
   };
 }
 
-async function applyMissingInstancePlans(supportModeId: string | null): Promise<OperationResultPayload> {
+async function applyMissingInstancePlans(supportModeId: string | null, commitUndoStep = true): Promise<OperationResultPayload> {
   const operation = 'apply-missing-instances';
   const colorCollection = await getColorCollection();
 
@@ -1869,7 +1884,7 @@ async function applyMissingInstancePlans(supportModeId: string | null): Promise<
       processed += 1;
     }
 
-    postOperationProgress({
+    await reportProgress({
       operation,
       message: 'Updating instances...',
       processed,
@@ -1882,7 +1897,7 @@ async function applyMissingInstancePlans(supportModeId: string | null): Promise<
   // Fix instances nested inside other instances (not reachable by the top-level
   // scan). Run after the top-level apply so masters are already updated, then
   // swapping a nested instance pulls a correct subtree. Re-walks the scope.
-  postOperationProgress({ operation, message: 'Updating nested instances...' });
+  await reportProgress({ operation, message: 'Updating nested instances...' });
   const nested: NestedFixResult = nestedScope
     ? await applyNestedMissingInstanceFixes(nestedScope, supportModeId, colorCollection, pendingNestedSwapped)
     : { fixedCount: 0, failedCount: 0, blockedCount: 0, skippedModeCount: 0, fixed: [], failed: [] };
@@ -1893,7 +1908,7 @@ async function applyMissingInstancePlans(supportModeId: string | null): Promise<
   // scan, using the same support fallback mode chosen for the instances.
   const cleanup = await applyLegacyColorRebindPlans(supportModeId);
 
-  if (fixed.length > 0 || nested.fixedCount > 0 || cleanup.reboundCount > 0 || cleanup.modeSetCount > 0) {
+  if ((fixed.length > 0 || nested.fixedCount > 0 || cleanup.reboundCount > 0 || cleanup.modeSetCount > 0) && commitUndoStep) {
     figma.commitUndo();
   }
 
@@ -1921,6 +1936,7 @@ async function applyMissingInstancePlans(supportModeId: string | null): Promise<
       supportLayerFailedCount: cleanup.failedCount,
       fixed,
       failed,
+      nestedFailed: nested.failed,
     },
   };
 }
@@ -2123,7 +2139,7 @@ async function scanLibraryStuckInstances(scope: FixScope): Promise<OperationResu
     });
 
     if ((index + 1) % 10 === 0 || index + 1 === instances.length) {
-      postOperationProgress({
+      await reportProgress({
         operation,
         message: 'Scanning instances...',
         processed: index + 1,
@@ -2949,6 +2965,152 @@ async function applyLegacyColorRebindPlans(
   return { reboundCount, skippedCount, failedPaintCount, modeSetCount, nodeFixedCount, failedCount };
 }
 
+// Yield a macrotask so the UI iframe gets a paint frame. The plugin sandbox
+// runs on the main thread; a chain of microtask-resolved `await`s (most Figma
+// async APIs) never lets the iframe repaint, so posted progress only shows when
+// we explicitly hand control back to the event loop.
+function yieldToUi(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+// Post progress and then yield so it actually renders mid-operation.
+async function reportProgress(payload: OperationProgressPayload): Promise<void> {
+  postOperationProgress(payload);
+  await yieldToUi();
+}
+
+async function postMigrationPhase(index: number, total: number, label: string): Promise<void> {
+  await reportProgress({
+    operation: 'run-migration',
+    message: label,
+    phaseLabel: label,
+    phaseIndex: index,
+    phaseTotal: total,
+  });
+}
+
+function asRecord(value: JsonValue): Record<string, JsonValue> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, JsonValue>
+    : {};
+}
+
+function numberFrom(record: Record<string, JsonValue>, key: string): number {
+  const value = record[key];
+  return typeof value === 'number' ? value : 0;
+}
+
+function arrayFrom(record: Record<string, JsonValue>, key: string): JsonValue[] {
+  const value = record[key];
+  return Array.isArray(value) ? value : [];
+}
+
+// One-button migration: runs the whole library update (components then
+// instances) over the entire file in the agreed order, as a single undo step.
+// Reuses the existing scan/apply functions; the user only chooses the support
+// replacement color up front.
+async function runMigration(supportModeId: string | null): Promise<OperationResultPayload> {
+  const operation = 'run-migration';
+
+  // Phase 1 — checks. Post the phase first so the overlay shows progress while
+  // the (potentially slow) prepare/token checks run.
+  await postMigrationPhase(1, 3, 'Checking file');
+
+  // Prepare-guard: the instance step needs the renamed Color collection. If the
+  // file hasn't been prepared (or isn't a library), stop with a clear pointer
+  // to step 1 instead of failing deep inside.
+  const prime = await checkPrimeStatus();
+  const primeState = asRecord(prime.details).state;
+  if (primeState !== 'ready') {
+    return {
+      createdAt: new Date().toISOString(),
+      operation,
+      status: 'error',
+      message: primeState === 'not-library'
+        ? 'This file does not look like a library file. Open the library and try again.'
+        : 'Variables are not prepared yet. Run "1. Prepare variables" first, then run the migration.',
+      details: { primeState: (primeState ?? null) as JsonValue },
+    };
+  }
+
+  // Token-guard: the semantic color modes must exist in the Color collection,
+  // otherwise tokens have not been regenerated/published with the new structure
+  // and instance color modes cannot be set correctly.
+  const colorCollection = await getColorCollection();
+  if (!colorCollection) {
+    return {
+      createdAt: new Date().toISOString(),
+      operation,
+      status: 'error',
+      message: 'Could not find the Color collection. Run "1. Prepare variables" first.',
+      details: {},
+    };
+  }
+  const existingModes = colorCollection.modes.map((mode) => normalizeToken(mode.name));
+  const missingModes = SEMANTIC_COLOR_GROUPS.filter((group) => !existingModes.includes(group));
+  if (missingModes.length > 0) {
+    return {
+      createdAt: new Date().toISOString(),
+      operation,
+      status: 'error',
+      message: `The Color collection is missing the mode${missingModes.length === 1 ? '' : 's'}: ${missingModes.join(', ')}. Regenerate and publish tokens (Token Studio) with the new structure before running.`,
+      details: { missingModes: missingModes as unknown as JsonValue },
+    };
+  }
+
+  let changed = false;
+
+  // Phase 2 — components: remove unsupported variants, rename, collapse.
+  await postMigrationPhase(2, 3, 'Updating components');
+  const variantsScan = asRecord((await scanUnsupportedVariants()).details);
+  const variantsApply = asRecord((await applyUnsupportedVariantPlans(false)).details);
+  if (numberFrom(variantsApply, 'removedCount') > 0 || numberFrom(variantsApply, 'renamedCount') > 0) {
+    changed = true;
+  }
+
+  // Phase 3 — instances: top-level swaps, nested fixes, and support cleanup.
+  await postMigrationPhase(3, 3, 'Updating instances');
+  await scanMissingInstances('file', supportModeId);
+  const instancesApply = asRecord((await applyMissingInstancePlans(supportModeId, false)).details);
+  if (numberFrom(instancesApply, 'fixedCount') > 0
+    || numberFrom(instancesApply, 'nestedFixedCount') > 0
+    || numberFrom(instancesApply, 'supportLayerFixedCount') > 0) {
+    changed = true;
+  }
+
+  // One undo step for the whole run.
+  if (changed) {
+    figma.commitUndo();
+  }
+
+  const removed = numberFrom(variantsApply, 'removedCount');
+  const renamed = numberFrom(variantsApply, 'renamedCount');
+  const instancesFixed = numberFrom(instancesApply, 'fixedCount');
+  const nestedFixed = numberFrom(instancesApply, 'nestedFixedCount');
+  const supportLayers = numberFrom(instancesApply, 'supportLayerFixedCount');
+
+  // Items that need manual attention — the only detail we surface.
+  const errorComponentSets = arrayFrom(variantsScan, 'errorComponentSetNames');
+  const failedVariants = arrayFrom(variantsApply, 'failed');
+  const failedInstances = arrayFrom(instancesApply, 'failed');
+  const unresolvedNested = arrayFrom(instancesApply, 'nestedFailed');
+  const attentionCount = errorComponentSets.length + failedVariants.length + failedInstances.length + unresolvedNested.length;
+
+  return {
+    createdAt: new Date().toISOString(),
+    operation,
+    status: 'success',
+    message: `Removed ${removed} variant${removed === 1 ? '' : 's'} and renamed ${renamed}. Updated ${instancesFixed} instance${instancesFixed === 1 ? '' : 's'} (+${nestedFixed} nested). Cleaned up ${supportLayers} support layer${supportLayers === 1 ? '' : 's'}.`,
+    details: {
+      attentionCount,
+      errorComponentSets,
+      failedVariants,
+      failedInstances,
+      unresolvedNested,
+    },
+  };
+}
+
 export const colorMigration: MigrationModule = {
   id: 'color',
   title: 'Color migration',
@@ -2956,17 +3118,7 @@ export const colorMigration: MigrationModule = {
   operations: {
     'check-prime-status': () => checkPrimeStatus(),
     'prime-variables': () => primeVariables(),
-    'scan-unsupported-variants': () => scanUnsupportedVariants(),
-    'apply-unsupported-variants': () => applyUnsupportedVariantPlans(),
     'load-color-modes': () => loadColorModes(),
-    'scan-missing-instances': (args) => {
-      const a = (args || {}) as { scope: FixScope; supportModeId: string | null };
-      return scanMissingInstances(a.scope, a.supportModeId);
-    },
-    'apply-missing-instances': (args) => {
-      const a = (args || {}) as { supportModeId: string | null };
-      return applyMissingInstancePlans(a.supportModeId);
-    },
     'scan-library-stuck-instances': (args) => {
       const a = (args || {}) as { scope: FixScope };
       return scanLibraryStuckInstances(a.scope);
@@ -2974,6 +3126,10 @@ export const colorMigration: MigrationModule = {
     'apply-library-stuck-instances': (args) => {
       const a = (args || {}) as { supportFallbackModeId: string | null; rebindLegacyVariables: boolean };
       return applyLibraryStuckInstancePlans(a.supportFallbackModeId, a.rebindLegacyVariables);
+    },
+    'run-migration': (args) => {
+      const a = (args || {}) as { supportModeId: string | null };
+      return runMigration(a.supportModeId);
     },
   },
 };

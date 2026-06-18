@@ -577,7 +577,7 @@
     return instances;
   }
   var NESTED_SWAPPED_MAX_NODES = 5e4;
-  async function collectNestedSwappedInstances(topInstances) {
+  async function collectNestedSwappedInstances(topInstances, reportOperation) {
     const found = [];
     const reportedNodeIds = /* @__PURE__ */ new Set();
     let walked = 0;
@@ -586,6 +586,12 @@
         return;
       }
       walked += 1;
+      if (reportOperation && walked % 400 === 0) {
+        await reportProgress({
+          operation: reportOperation,
+          message: `Scanning nested instances... (${walked} checked, ${found.length} found)`
+        });
+      }
       let descend = true;
       if (node.type === "INSTANCE" && depth > 0) {
         let main = null;
@@ -665,12 +671,12 @@
   async function scanUnsupportedVariants() {
     const operation = "scan-unsupported-variants";
     pendingUnsupportedVariantPlans = [];
-    postOperationProgress({
+    await reportProgress({
       operation,
       message: "Loading file..."
     });
     const componentSets = await getAllComponentSets();
-    postOperationProgress({
+    await reportProgress({
       operation,
       message: "Scanning variants...",
       processed: 0,
@@ -754,7 +760,7 @@
         }
       }
       if ((index + 1) % 10 === 0 || index + 1 === componentSets.length) {
-        postOperationProgress({
+        await reportProgress({
           operation,
           message: "Scanning variants...",
           processed: index + 1,
@@ -837,7 +843,7 @@
     } catch (e) {
     }
   }
-  async function applyUnsupportedVariantPlans() {
+  async function applyUnsupportedVariantPlans(commitUndoStep = true) {
     const operation = "apply-unsupported-variants";
     const plans = pendingUnsupportedVariantPlans;
     if (plans.length === 0) {
@@ -854,7 +860,7 @@
     const removed = [];
     const renamed = [];
     const failed = [];
-    postOperationProgress({
+    await reportProgress({
       operation,
       message: "Removing and updating variants...",
       processed,
@@ -892,7 +898,7 @@
         }
         processed += 1;
       }
-      postOperationProgress({
+      await reportProgress({
         operation,
         message: "Removing and updating variants...",
         processed,
@@ -931,7 +937,7 @@
         }
         processed += 1;
       }
-      postOperationProgress({
+      await reportProgress({
         operation,
         message: "Removing and updating variants...",
         processed,
@@ -952,7 +958,7 @@
     }
     pendingUnsupportedVariantPlans = [];
     const status = failed.length > 0 ? "error" : "success";
-    if (status === "success") {
+    if (status === "success" && commitUndoStep) {
       figma.commitUndo();
     }
     return {
@@ -1055,7 +1061,7 @@
     var _a;
     const operation = "scan-missing-instances";
     pendingMissingInstancePlans = [];
-    postOperationProgress({
+    await reportProgress({
       operation,
       message: "Loading color modes..."
     });
@@ -1071,7 +1077,7 @@
         }
       };
     }
-    postOperationProgress({
+    await reportProgress({
       operation,
       message: getScopeLoadingMessage(scope)
     });
@@ -1107,7 +1113,7 @@
         });
       }
       if ((index + 1) % 10 === 0 || index + 1 === instances.length) {
-        postOperationProgress({
+        await reportProgress({
           operation,
           message: "Scanning instances...",
           processed: index + 1,
@@ -1143,7 +1149,7 @@
     const looseCleanable = loose.readyCount + loose.supportFallbackCount;
     const looseNeedsReviewOnly = loose.reviewCount - loose.supportFallbackCount;
     const looseSuffix = looseHasWork ? ` Plus ${looseCleanable} support layer${looseCleanable === 1 ? "" : "s"} to clean up${looseNeedsReviewOnly > 0 ? ` (${looseNeedsReviewOnly} need review)` : ""}.` : "";
-    pendingNestedSwapped = await collectNestedSwappedInstances(instances);
+    pendingNestedSwapped = await collectNestedSwappedInstances(instances, operation);
     if (plans.length === 0 && !looseHasWork) {
       return {
         createdAt: (/* @__PURE__ */ new Date()).toISOString(),
@@ -1214,7 +1220,7 @@
     for (let t = 0; t < affectedTopIds.length; t += 1) {
       const topId = affectedTopIds[t];
       let pass = 0;
-      postOperationProgress({
+      await reportProgress({
         operation,
         message: "Updating nested instances...",
         processed: t,
@@ -1294,7 +1300,7 @@
       failed
     };
   }
-  async function applyMissingInstancePlans(supportModeId) {
+  async function applyMissingInstancePlans(supportModeId, commitUndoStep = true) {
     const operation = "apply-missing-instances";
     const colorCollection = await getColorCollection();
     if (!colorCollection) {
@@ -1385,7 +1391,7 @@
         }
         processed += 1;
       }
-      postOperationProgress({
+      await reportProgress({
         operation,
         message: "Updating instances...",
         processed,
@@ -1393,12 +1399,12 @@
       });
     }
     pendingMissingInstancePlans = [];
-    postOperationProgress({ operation, message: "Updating nested instances..." });
+    await reportProgress({ operation, message: "Updating nested instances..." });
     const nested = nestedScope ? await applyNestedMissingInstanceFixes(nestedScope, supportModeId, colorCollection, pendingNestedSwapped) : { fixedCount: 0, failedCount: 0, blockedCount: 0, skippedModeCount: 0, fixed: [], failed: [] };
     pendingMissingInstanceScope = null;
     pendingNestedSwapped = [];
     const cleanup = await applyLegacyColorRebindPlans(supportModeId);
-    if (fixed.length > 0 || nested.fixedCount > 0 || cleanup.reboundCount > 0 || cleanup.modeSetCount > 0) {
+    if ((fixed.length > 0 || nested.fixedCount > 0 || cleanup.reboundCount > 0 || cleanup.modeSetCount > 0) && commitUndoStep) {
       figma.commitUndo();
     }
     const cleanupSuffix = cleanup.nodeFixedCount > 0 ? ` Cleaned up ${cleanup.reboundCount} support binding${cleanup.reboundCount === 1 ? "" : "s"} on ${cleanup.nodeFixedCount} layer${cleanup.nodeFixedCount === 1 ? "" : "s"}.` : "";
@@ -1419,7 +1425,8 @@
         supportBindingReboundCount: cleanup.reboundCount,
         supportLayerFailedCount: cleanup.failedCount,
         fixed,
-        failed
+        failed,
+        nestedFailed: nested.failed
       }
     };
   }
@@ -1575,7 +1582,7 @@
         oldComponentSetName: oldComponentSet.name
       });
       if ((index + 1) % 10 === 0 || index + 1 === instances.length) {
-        postOperationProgress({
+        await reportProgress({
           operation,
           message: "Scanning instances...",
           processed: index + 1,
@@ -2174,6 +2181,108 @@
     }
     return { reboundCount, skippedCount, failedPaintCount, modeSetCount, nodeFixedCount, failedCount };
   }
+  function yieldToUi() {
+    return new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  async function reportProgress(payload) {
+    postOperationProgress(payload);
+    await yieldToUi();
+  }
+  async function postMigrationPhase(index, total, label) {
+    await reportProgress({
+      operation: "run-migration",
+      message: label,
+      phaseLabel: label,
+      phaseIndex: index,
+      phaseTotal: total
+    });
+  }
+  function asRecord(value) {
+    return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  }
+  function numberFrom(record, key) {
+    const value = record[key];
+    return typeof value === "number" ? value : 0;
+  }
+  function arrayFrom(record, key) {
+    const value = record[key];
+    return Array.isArray(value) ? value : [];
+  }
+  async function runMigration(supportModeId) {
+    const operation = "run-migration";
+    await postMigrationPhase(1, 3, "Checking file");
+    const prime = await checkPrimeStatus();
+    const primeState = asRecord(prime.details).state;
+    if (primeState !== "ready") {
+      return {
+        createdAt: (/* @__PURE__ */ new Date()).toISOString(),
+        operation,
+        status: "error",
+        message: primeState === "not-library" ? "This file does not look like a library file. Open the library and try again." : 'Variables are not prepared yet. Run "1. Prepare variables" first, then run the migration.',
+        details: { primeState: primeState != null ? primeState : null }
+      };
+    }
+    const colorCollection = await getColorCollection();
+    if (!colorCollection) {
+      return {
+        createdAt: (/* @__PURE__ */ new Date()).toISOString(),
+        operation,
+        status: "error",
+        message: 'Could not find the Color collection. Run "1. Prepare variables" first.',
+        details: {}
+      };
+    }
+    const existingModes = colorCollection.modes.map((mode) => normalizeToken(mode.name));
+    const missingModes = SEMANTIC_COLOR_GROUPS.filter((group) => !existingModes.includes(group));
+    if (missingModes.length > 0) {
+      return {
+        createdAt: (/* @__PURE__ */ new Date()).toISOString(),
+        operation,
+        status: "error",
+        message: `The Color collection is missing the mode${missingModes.length === 1 ? "" : "s"}: ${missingModes.join(", ")}. Regenerate and publish tokens (Token Studio) with the new structure before running.`,
+        details: { missingModes }
+      };
+    }
+    let changed = false;
+    await postMigrationPhase(2, 3, "Updating components");
+    const variantsScan = asRecord((await scanUnsupportedVariants()).details);
+    const variantsApply = asRecord((await applyUnsupportedVariantPlans(false)).details);
+    if (numberFrom(variantsApply, "removedCount") > 0 || numberFrom(variantsApply, "renamedCount") > 0) {
+      changed = true;
+    }
+    await postMigrationPhase(3, 3, "Updating instances");
+    await scanMissingInstances("file", supportModeId);
+    const instancesApply = asRecord((await applyMissingInstancePlans(supportModeId, false)).details);
+    if (numberFrom(instancesApply, "fixedCount") > 0 || numberFrom(instancesApply, "nestedFixedCount") > 0 || numberFrom(instancesApply, "supportLayerFixedCount") > 0) {
+      changed = true;
+    }
+    if (changed) {
+      figma.commitUndo();
+    }
+    const removed = numberFrom(variantsApply, "removedCount");
+    const renamed = numberFrom(variantsApply, "renamedCount");
+    const instancesFixed = numberFrom(instancesApply, "fixedCount");
+    const nestedFixed = numberFrom(instancesApply, "nestedFixedCount");
+    const supportLayers = numberFrom(instancesApply, "supportLayerFixedCount");
+    const errorComponentSets = arrayFrom(variantsScan, "errorComponentSetNames");
+    const failedVariants = arrayFrom(variantsApply, "failed");
+    const failedInstances = arrayFrom(instancesApply, "failed");
+    const unresolvedNested = arrayFrom(instancesApply, "nestedFailed");
+    const attentionCount = errorComponentSets.length + failedVariants.length + failedInstances.length + unresolvedNested.length;
+    return {
+      createdAt: (/* @__PURE__ */ new Date()).toISOString(),
+      operation,
+      status: "success",
+      message: `Removed ${removed} variant${removed === 1 ? "" : "s"} and renamed ${renamed}. Updated ${instancesFixed} instance${instancesFixed === 1 ? "" : "s"} (+${nestedFixed} nested). Cleaned up ${supportLayers} support layer${supportLayers === 1 ? "" : "s"}.`,
+      details: {
+        attentionCount,
+        errorComponentSets,
+        failedVariants,
+        failedInstances,
+        unresolvedNested
+      }
+    };
+  }
   var colorMigration = {
     id: "color",
     title: "Color migration",
@@ -2181,17 +2290,7 @@
     operations: {
       "check-prime-status": () => checkPrimeStatus(),
       "prime-variables": () => primeVariables(),
-      "scan-unsupported-variants": () => scanUnsupportedVariants(),
-      "apply-unsupported-variants": () => applyUnsupportedVariantPlans(),
       "load-color-modes": () => loadColorModes(),
-      "scan-missing-instances": (args) => {
-        const a = args || {};
-        return scanMissingInstances(a.scope, a.supportModeId);
-      },
-      "apply-missing-instances": (args) => {
-        const a = args || {};
-        return applyMissingInstancePlans(a.supportModeId);
-      },
       "scan-library-stuck-instances": (args) => {
         const a = args || {};
         return scanLibraryStuckInstances(a.scope);
@@ -2199,6 +2298,10 @@
       "apply-library-stuck-instances": (args) => {
         const a = args || {};
         return applyLibraryStuckInstancePlans(a.supportFallbackModeId, a.rebindLegacyVariables);
+      },
+      "run-migration": (args) => {
+        const a = args || {};
+        return runMigration(a.supportModeId);
       }
     }
   };

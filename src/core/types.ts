@@ -16,6 +16,12 @@ export type OperationProgressPayload = {
   message: string;
   processed?: number;
   total?: number;
+  // Optional phase markers for multi-phase operations (e.g. the combined
+  // migration run). The orchestrator emits these at phase boundaries; the UI
+  // keeps the latest phase label sticky while item counts drive the bar.
+  phaseLabel?: string;
+  phaseIndex?: number;
+  phaseTotal?: number;
 };
 
 export type OperationResultPayload = {

@@ -20,18 +20,7 @@ export function createColorController() {
   const primeStatusText = document.getElementById('primeStatusText');
   const primeNote = document.getElementById('primeNote');
   const primeActions = document.getElementById('primeActions');
-  const scanVariantsButton = document.getElementById('scanVariants');
-  const applyVariantsButton = document.getElementById('applyVariants');
-  const fixScopeSelect = document.getElementById('fixScope');
   const supportModeSelect = document.getElementById('supportMode');
-  const scanMissingButton = document.getElementById('scanMissing');
-  const applyMissingButton = document.getElementById('applyMissing');
-  const variantsResultPanel = document.getElementById('variantsResultPanel');
-  const variantsSummary = document.getElementById('variantsSummary');
-  const variantsDetails = document.getElementById('variantsDetails');
-  const instancesResultPanel = document.getElementById('instancesResultPanel');
-  const instancesSummary = document.getElementById('instancesSummary');
-  const instancesDetails = document.getElementById('instancesDetails');
   const libraryFixScopeSelect = document.getElementById('libraryFixScope');
   const scanLibraryButton = document.getElementById('scanLibrary');
   const applyLibraryButton = document.getElementById('applyLibrary');
@@ -41,6 +30,12 @@ export function createColorController() {
   const librarySupportChoiceRow = document.getElementById('librarySupportChoiceRow');
   const librarySupportModeSelect = document.getElementById('librarySupportMode');
   const rebindLegacyCheckbox = document.getElementById('rebindLegacyVariables');
+  const runButton = document.getElementById('runMigration');
+  const runResultPanel = document.getElementById('runResultPanel');
+  const runSummary = document.getElementById('runSummary');
+  const runDetails = document.getElementById('runDetails');
+  const busyPhase = document.getElementById('busyPhase');
+  const busyBarFill = document.getElementById('busyBarFill');
   let activeSummary = null;
   let activeDetails = null;
   // Carries the "Renamed N variables" line from a successful prepare run into
@@ -98,10 +93,7 @@ export function createColorController() {
   }
 
   function resetLibraryFlowState() {
-    variantsResultPanel.classList.add('is-hidden');
-    instancesResultPanel.classList.add('is-hidden');
-    resetVariantButtons();
-    resetMissingButtons();
+    runResultPanel.classList.add('is-hidden');
     setPrimeState('checking');
     selectStep('prime');
   }
@@ -134,20 +126,26 @@ export function createColorController() {
     for (const panel of stepPanels) {
       panel.classList.toggle('active', panel.id === `step-${step}`);
     }
+
+    // Refresh the support-color modes when the user reaches the run step — the
+    // Color collection may not have existed when the migration was first opened
+    // (e.g. before "1. Prepare" ran).
+    if (step === 'run') {
+      send('load-color-modes');
+    }
   }
 
   function setBusy(isBusy, message) {
+    if (isBusy) {
+      resetProgressIndicator();
+    }
     primeButton.disabled = isBusy;
-    scanVariantsButton.disabled = isBusy;
-    applyVariantsButton.disabled = isBusy || !applyVariantsButton.dataset.ready;
-    fixScopeSelect.disabled = isBusy;
     supportModeSelect.disabled = isBusy;
-    scanMissingButton.disabled = isBusy;
-    applyMissingButton.disabled = isBusy || !applyMissingButton.dataset.ready;
     libraryFixScopeSelect.disabled = isBusy;
     scanLibraryButton.disabled = isBusy;
     applyLibraryButton.disabled = isBusy || !applyLibraryButton.dataset.ready;
     rebindLegacyCheckbox.disabled = isBusy;
+    runButton.disabled = isBusy;
     setBusyOverlay(isBusy, message);
   }
 
@@ -164,32 +162,10 @@ export function createColorController() {
     activeDetails.innerHTML = '';
   }
 
-  function activateVariantApply(details) {
-    const total = (details.removeCount || 0) + (details.renameCount || 0);
-    applyVariantsButton.textContent = total > 0 ? `Remove and update variants (${total})` : 'Remove and update variants';
-    applyVariantsButton.dataset.ready = total > 0 ? 'true' : '';
-    applyVariantsButton.disabled = total === 0;
-  }
-
-  function resetVariantButtons() {
-    applyVariantsButton.textContent = 'Remove and update variants';
-    applyVariantsButton.dataset.ready = '';
-    applyVariantsButton.disabled = true;
-  }
-
-  function activateMissingApply(details) {
-    const readyCount = details.readyCount || 0;
-    applyMissingButton.textContent = readyCount > 0
-      ? `Update ${readyCount} instance${readyCount === 1 ? '' : 's'}`
-      : 'Update instances';
-    applyMissingButton.dataset.ready = readyCount > 0 ? 'true' : '';
-    applyMissingButton.disabled = readyCount === 0;
-  }
-
-  function resetMissingButtons() {
-    applyMissingButton.textContent = 'Update instances';
-    applyMissingButton.dataset.ready = '';
-    applyMissingButton.disabled = true;
+  function resetProgressIndicator() {
+    busyPhase.classList.add('is-hidden');
+    busyPhase.textContent = '';
+    busyBarFill.style.width = '0%';
   }
 
   function activateLibraryApply(details) {
@@ -231,9 +207,24 @@ export function createColorController() {
   }
 
   function renderOperationProgress(payload) {
-    const progress = typeof payload.processed === 'number' && typeof payload.total === 'number'
-      ? ` (${payload.processed}/${payload.total})`
-      : '';
+    // Phase marker (sticky): set the bold phase line and reset the bar so the
+    // next phase's item counts fill it from zero.
+    if (payload.phaseLabel) {
+      const prefix = payload.phaseIndex && payload.phaseTotal
+        ? `${payload.phaseIndex}/${payload.phaseTotal} · `
+        : '';
+      busyPhase.textContent = `${prefix}${payload.phaseLabel}`;
+      busyPhase.classList.remove('is-hidden');
+      // New phase: empty the bar until this phase's counts arrive.
+      busyBarFill.style.width = '0%';
+    }
+
+    const hasCounts = typeof payload.processed === 'number' && typeof payload.total === 'number' && payload.total > 0;
+    if (hasCounts) {
+      busyBarFill.style.width = `${Math.min(100, Math.round((payload.processed / payload.total) * 100))}%`;
+    }
+
+    const progress = hasCounts ? ` (${payload.processed}/${payload.total})` : '';
     const message = `${payload.message}${progress}`;
     if (activeSummary) {
       activeSummary.textContent = message;
@@ -273,16 +264,8 @@ export function createColorController() {
 
     setResultTargetForOperation(payload.operation);
 
-    if (payload.operation === 'scan-unsupported-variants' && payload.status === 'preview') {
-      activateVariantApply(payload.details || {});
-    } else if (payload.operation === 'scan-missing-instances' && payload.status === 'preview') {
-      activateMissingApply(payload.details || {});
-    } else if (payload.operation === 'scan-library-stuck-instances' && payload.status === 'preview') {
+    if (payload.operation === 'scan-library-stuck-instances' && payload.status === 'preview') {
       activateLibraryApply(payload.details || {});
-    } else if (payload.operation === 'apply-unsupported-variants') {
-      resetVariantButtons();
-    } else if (payload.operation === 'apply-missing-instances') {
-      resetMissingButtons();
     } else if (payload.operation === 'apply-library-stuck-instances') {
       resetLibraryButtons();
     }
@@ -293,18 +276,13 @@ export function createColorController() {
   }
 
   function setResultTargetForOperation(operation) {
-    if (operation === 'scan-unsupported-variants' || operation === 'apply-unsupported-variants') {
-      setActiveResult(variantsResultPanel, variantsSummary, variantsDetails);
-      return;
-    }
-
-    if (operation === 'scan-missing-instances' || operation === 'apply-missing-instances') {
-      setActiveResult(instancesResultPanel, instancesSummary, instancesDetails);
-      return;
-    }
-
     if (operation === 'scan-library-stuck-instances' || operation === 'apply-library-stuck-instances') {
       setActiveResult(libraryResultPanel, librarySummary, libraryDetails);
+      return;
+    }
+
+    if (operation === 'run-migration') {
+      setActiveResult(runResultPanel, runSummary, runDetails);
     }
   }
 
@@ -314,163 +292,100 @@ export function createColorController() {
     }
     activeDetails.innerHTML = '';
 
-    if (payload.operation === 'scan-unsupported-variants') {
-      renderVariantsDetails(payload);
-      return;
-    }
-
-    if (payload.operation === 'apply-unsupported-variants') {
-      renderVariantsApplyDetails(payload);
-      return;
-    }
-
-    if (payload.operation === 'scan-missing-instances') {
-      renderMissingDetails(payload);
-      return;
-    }
-
     if (payload.operation === 'scan-library-stuck-instances') {
       renderLibraryDetails(payload);
+      return;
+    }
+
+    if (payload.operation === 'run-migration') {
+      renderRunDetails(payload);
     }
   }
 
-  function renderVariantsApplyDetails(payload) {
+  // The combined run only surfaces items that need manual attention; the
+  // headline counts live in the summary line.
+  function renderRunDetails(payload) {
     const details = payload.details || {};
-    const failed = Array.isArray(details.failed) ? details.failed : [];
-    if (failed.length === 0) {
+    const errorComponentSets = Array.isArray(details.errorComponentSets) ? details.errorComponentSets : [];
+    const failedVariants = Array.isArray(details.failedVariants) ? details.failedVariants : [];
+    const failedInstances = Array.isArray(details.failedInstances) ? details.failedInstances : [];
+    const unresolvedNested = Array.isArray(details.unresolvedNested) ? details.unresolvedNested : [];
+
+    if (errorComponentSets.length === 0 && failedVariants.length === 0
+      && failedInstances.length === 0 && unresolvedNested.length === 0) {
       return;
     }
 
-    const accordion = document.createElement('details');
-    accordion.className = 'instances-accordion';
-    accordion.open = true;
+    if (errorComponentSets.length > 0) {
+      const heading = document.createElement('div');
+      heading.className = 'detail-meta';
+      heading.textContent = `Component sets with existing Figma errors — skipped (${errorComponentSets.length}): ${errorComponentSets.join(', ')}. Fix the variant conflicts and run again.`;
+      runDetails.appendChild(heading);
+    }
 
-    const summary = document.createElement('summary');
-    summary.textContent = `Failed (${failed.length})`;
-    accordion.appendChild(summary);
+    if (failedVariants.length > 0) {
+      renderRunAttentionList(`Variants that could not be updated (${failedVariants.length})`, failedVariants, (item) => ({
+        nodeId: item.id,
+        name: item.name || 'Unnamed variant',
+        meta: [item.action, item.reason].filter(Boolean).join(' · '),
+      }));
+    }
+
+    if (failedInstances.length > 0) {
+      renderRunAttentionList(`Instances that could not be updated (${failedInstances.length})`, failedInstances, (item) => ({
+        nodeId: item.instanceId,
+        name: item.instanceName || 'Unnamed instance',
+        meta: item.reason || 'Unknown reason',
+      }));
+    }
+
+    if (unresolvedNested.length > 0) {
+      renderRunAttentionList(`Nested instances not resolved (${unresolvedNested.length})`, unresolvedNested, (item) => ({
+        nodeId: item.nodeId,
+        name: item.nodeName || 'Unnamed instance',
+        meta: [
+          item.topInstanceName ? `in ${item.topInstanceName}` : null,
+          item.reason || 'Unknown reason',
+        ].filter(Boolean).join(' · '),
+      }));
+    }
+  }
+
+  function renderRunAttentionList(headingText, items, mapItem) {
+    const heading = document.createElement('div');
+    heading.className = 'detail-meta';
+    heading.textContent = headingText;
+    runDetails.appendChild(heading);
 
     const list = document.createElement('div');
     list.className = 'instance-list';
-
-    for (const item of failed) {
+    for (const item of items.slice(0, 50)) {
+      const row = mapItem(item);
       const button = document.createElement('button');
       button.className = 'instance-link';
-      button.dataset.nodeId = item.id;
+      button.dataset.nodeId = row.nodeId;
 
       const name = document.createElement('div');
       name.className = 'instance-link-name';
-      name.textContent = item.name || 'Unnamed';
+      name.textContent = row.name;
 
       const meta = document.createElement('div');
       meta.className = 'instance-link-meta';
-      const actionLabel = item.action ? `${item.action}` : 'unknown';
-      const reason = item.reason || 'Unknown reason';
-      meta.textContent = `${actionLabel} · ${reason}`;
+      meta.textContent = row.meta;
 
       button.append(name, meta);
-      button.onclick = () => {
-        focusNode(item.id);
-      };
-
+      if (row.nodeId) {
+        button.onclick = () => focusNode(row.nodeId);
+      }
       list.appendChild(button);
     }
+    runDetails.appendChild(list);
 
-    accordion.appendChild(list);
-    activeDetails.appendChild(accordion);
-  }
-
-  function renderVariantsDetails(payload) {
-    const plans = payload.details && Array.isArray(payload.details.plans) ? payload.details.plans : [];
-    const skipped = [];
-    for (const plan of plans) {
-      if (!plan || !Array.isArray(plan.skippedRenames)) continue;
-      for (const item of plan.skippedRenames) {
-        skipped.push({
-          componentSetName: plan.componentSetName,
-          pageName: plan.pageName,
-          variantName: item.name,
-          reason: item.reason,
-        });
-      }
-    }
-
-    if (skipped.length === 0) {
-      return;
-    }
-
-    const heading = document.createElement('div');
-    heading.className = 'detail-meta';
-    heading.textContent = `Skipped renames (${skipped.length})`;
-    activeDetails.appendChild(heading);
-
-    for (const item of skipped.slice(0, 20)) {
-      const detail = document.createElement('div');
-      detail.className = 'detail-item';
-
-      const title = document.createElement('div');
-      title.className = 'detail-title';
-      title.textContent = item.variantName || 'Unnamed variant';
-
-      const meta = document.createElement('div');
-      meta.className = 'detail-meta';
-      meta.textContent = [
-        `Component set: ${item.componentSetName || 'Unknown'}`,
-        `Page: ${item.pageName || 'Unknown'}`,
-        `Why: ${item.reason || 'Unknown'}`,
-      ].join(' | ');
-
-      detail.append(title, meta);
-      activeDetails.appendChild(detail);
-    }
-
-    if (skipped.length > 20) {
+    if (items.length > 50) {
       const more = document.createElement('div');
       more.className = 'detail-meta';
-      more.textContent = `${skipped.length - 20} more skipped renames not shown.`;
-      activeDetails.appendChild(more);
-    }
-  }
-
-  function renderMissingDetails(payload) {
-    const plans = payload.details && Array.isArray(payload.details.plans) ? payload.details.plans : [];
-    const blockedPlans = plans.filter((plan) => plan.status === 'blocked');
-
-    if (blockedPlans.length > 0) {
-      const heading = document.createElement('div');
-      heading.className = 'detail-meta';
-      heading.textContent = `Needs review (${blockedPlans.length})`;
-      activeDetails.appendChild(heading);
-
-      for (const plan of blockedPlans.slice(0, 20)) {
-        const item = document.createElement('div');
-        item.className = 'detail-item';
-
-        const title = document.createElement('div');
-        title.className = 'detail-title';
-        title.textContent = plan.instanceName || 'Unnamed instance';
-
-        const meta = document.createElement('div');
-        meta.className = 'detail-meta';
-        meta.textContent = [
-          `Page: ${plan.pageName || 'Unknown'}`,
-          `Parent: ${plan.parentName || 'Unknown'}`,
-          `Old variant: ${plan.sourceComponentName || 'Unknown'}`,
-          `Old color: ${formatOptionalValue(plan.removedColor)}`,
-          `Expected variant: ${formatTargetPropertyValues(plan.targetPropertyValues)}`,
-          `Possible matches: ${typeof plan.targetCandidateCount === 'number' ? plan.targetCandidateCount : 'Unknown'}`,
-          `Why: ${plan.reason || 'Unknown'}`,
-        ].join(' | ');
-
-        item.append(title, meta);
-        activeDetails.appendChild(item);
-      }
-
-      if (blockedPlans.length > 20) {
-        const more = document.createElement('div');
-        more.className = 'detail-meta';
-        more.textContent = `${blockedPlans.length - 20} more instances need review but are not shown.`;
-        activeDetails.appendChild(more);
-      }
+      more.textContent = `${items.length - 50} more not shown.`;
+      runDetails.appendChild(more);
     }
   }
 
@@ -625,37 +540,8 @@ export function createColorController() {
       return payload.message || 'Something went wrong.';
     }
 
-    if (payload.operation === 'scan-unsupported-variants') {
-      const changeCount = (details.removeCount || 0) + (details.renameCount || 0);
-      let summary = `Scanned ${details.scannedComponentSetCount || 0} component sets. Found ${changeCount} change${changeCount === 1 ? '' : 's'} to apply.`;
-      const errorNames = details.errorComponentSetNames || [];
-      if (errorNames.length > 0) {
-        summary += ` ⚠ ${errorNames.length} component set${errorNames.length === 1 ? '' : 's'} ${errorNames.length === 1 ? 'has' : 'have'} existing errors in Figma and ${errorNames.length === 1 ? 'was' : 'were'} skipped: ${errorNames.join(', ')}. Fix the variant conflicts and rescan.`;
-      }
-      return summary;
-    }
-
-    if (payload.operation === 'apply-unsupported-variants') {
-      const appliedCount = (details.removedCount || 0) + (details.renamedCount || 0);
-      const failedCount = details.failedCount || 0;
-      return `Applied ${appliedCount} change${appliedCount === 1 ? '' : 's'}. ${failedCount} change${failedCount === 1 ? '' : 's'} failed.`;
-    }
-
     if (payload.operation === 'load-color-modes') {
       return `Loaded ${(details.modes || []).length} color modes.`;
-    }
-
-    if (payload.operation === 'scan-missing-instances') {
-      return `Scanned ${details.scannedInstanceCount || 0} instances. ${details.readyCount || 0} can be updated, and ${details.blockedCount || 0} need review.${supportLayerScanSuffix(details)}`;
-    }
-
-    if (payload.operation === 'apply-missing-instances') {
-      const nestedFixed = details.nestedFixedCount || 0;
-      const nestedFailed = details.nestedFailedCount || 0;
-      const nestedPart = nestedFixed > 0 || nestedFailed > 0
-        ? ` Fixed ${nestedFixed} nested instance${nestedFixed === 1 ? '' : 's'}${nestedFailed > 0 ? `, ${nestedFailed} unresolved` : ''}.`
-        : '';
-      return `Updated ${details.fixedCount || 0} instances. Left color mode unchanged for ${details.skippedModeCount || 0}. ${details.failedCount || 0} update${details.failedCount === 1 ? '' : 's'} failed.${nestedPart}${supportLayerApplySuffix(details)}`;
     }
 
     if (payload.operation === 'scan-library-stuck-instances') {
@@ -689,29 +575,9 @@ export function createColorController() {
     send('prime-variables');
   };
 
-  scanVariantsButton.onclick = () => {
-    resetVariantButtons();
-    startOperation('Scanning variants...', variantsResultPanel, variantsSummary, variantsDetails);
-    send('scan-unsupported-variants');
-  };
-
-  applyVariantsButton.onclick = () => {
-    startOperation('Removing and updating variants...', variantsResultPanel, variantsSummary, variantsDetails);
-    send('apply-unsupported-variants');
-  };
-
-  scanMissingButton.onclick = () => {
-    resetMissingButtons();
-    startOperation('Scanning instances...', instancesResultPanel, instancesSummary, instancesDetails);
-    send('scan-missing-instances', {
-      scope: fixScopeSelect.value,
-      supportModeId: supportModeSelect.value || null,
-    });
-  };
-
-  applyMissingButton.onclick = () => {
-    startOperation('Updating instances...', instancesResultPanel, instancesSummary, instancesDetails);
-    send('apply-missing-instances', { supportModeId: supportModeSelect.value || null });
+  runButton.onclick = () => {
+    startOperation('Running migration...', runResultPanel, runSummary, runDetails);
+    send('run-migration', { supportModeId: supportModeSelect.value || null });
   };
 
   scanLibraryButton.onclick = () => {
