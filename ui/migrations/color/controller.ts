@@ -31,7 +31,9 @@ export function createColorController() {
   const librarySupportModeSelect = document.getElementById('librarySupportMode');
   const rebindLegacyCheckbox = document.getElementById('rebindLegacyVariables');
   const runButton = document.getElementById('runMigration');
+  const runInputPanel = document.getElementById('runInputPanel');
   const runResultPanel = document.getElementById('runResultPanel');
+  const runResultTitle = document.getElementById('runResultTitle');
   const runSummary = document.getElementById('runSummary');
   const runDetails = document.getElementById('runDetails');
   const busyPhase = document.getElementById('busyPhase');
@@ -106,7 +108,11 @@ export function createColorController() {
   }
 
   function resetLibraryFlowState() {
+    // Restore the run box to its pre-run look (input shown, result hidden).
+    runInputPanel.classList.remove('is-hidden');
     runResultPanel.classList.add('is-hidden');
+    runResultPanel.classList.remove('panel-done');
+    runResultTitle.textContent = 'Result';
     setPrimeState('checking');
   }
 
@@ -263,6 +269,14 @@ export function createColorController() {
       resetLibraryButtons();
     }
 
+    // On a successful migration, hide the input box and give the result a
+    // "done" look so it's clear no further action is needed.
+    if (payload.operation === 'run-migration' && payload.status === 'success') {
+      runInputPanel.classList.add('is-hidden');
+      runResultPanel.classList.add('panel-done');
+      runResultTitle.textContent = 'Migration complete';
+    }
+
     setBusy(false);
     activeSummary.textContent = getResultSummary(payload);
     renderDetails(payload);
@@ -301,11 +315,8 @@ export function createColorController() {
     const details = payload.details || {};
     const errorComponentSets = Array.isArray(details.errorComponentSets) ? details.errorComponentSets : [];
     const failedVariants = Array.isArray(details.failedVariants) ? details.failedVariants : [];
-    const failedInstances = Array.isArray(details.failedInstances) ? details.failedInstances : [];
-    const unresolvedNested = Array.isArray(details.unresolvedNested) ? details.unresolvedNested : [];
 
-    if (errorComponentSets.length === 0 && failedVariants.length === 0
-      && failedInstances.length === 0 && unresolvedNested.length === 0) {
+    if (errorComponentSets.length === 0 && failedVariants.length === 0) {
       return;
     }
 
@@ -321,25 +332,6 @@ export function createColorController() {
         nodeId: item.id,
         name: item.name || 'Unnamed variant',
         meta: [item.action, item.reason].filter(Boolean).join(' · '),
-      }));
-    }
-
-    if (failedInstances.length > 0) {
-      renderRunAttentionList(`Instances that could not be updated (${failedInstances.length})`, failedInstances, (item) => ({
-        nodeId: item.instanceId,
-        name: item.instanceName || 'Unnamed instance',
-        meta: item.reason || 'Unknown reason',
-      }));
-    }
-
-    if (unresolvedNested.length > 0) {
-      renderRunAttentionList(`Nested instances not resolved (${unresolvedNested.length})`, unresolvedNested, (item) => ({
-        nodeId: item.nodeId,
-        name: item.nodeName || 'Unnamed instance',
-        meta: [
-          item.topInstanceName ? `in ${item.topInstanceName}` : null,
-          item.reason || 'Unknown reason',
-        ].filter(Boolean).join(' · '),
       }));
     }
   }

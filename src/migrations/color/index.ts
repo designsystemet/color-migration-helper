@@ -129,6 +129,22 @@ const PRESERVED_COMPONENT_SET_NAMES = ['Alert', 'ValidationMessage'];
 const SEMANTIC_COLOR_GROUPS = ['info', 'warning', 'danger', 'success'];
 const SKIP_MISSING_INSTANCE_MODE_CONTEXTS = ['TableColumn'];
 
+// Pages that are documentation/scaffolding, not real library content. They are
+// skipped in every file-wide search (variant removal, instance migration,
+// support cleanup) so their many helper/test instances neither slow the run nor
+// get migrated. Not every file has all of these. Matched by the meaningful page
+// name with emoji/punctuation stripped, so "⚙️ Base components" → "base
+// components" and "👀 Test" → "test".
+const IGNORED_PAGE_NAMES = ['base components', 'test'];
+
+function isIgnoredPage(pageName: string | null | undefined): boolean {
+  if (typeof pageName !== 'string') {
+    return false;
+  }
+  const cleaned = pageName.toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();
+  return IGNORED_PAGE_NAMES.indexOf(cleaned) !== -1;
+}
+
 let pendingUnsupportedVariantPlans: ComponentSetRemovalPlan[] = [];
 let pendingMissingInstancePlans: MissingInstancePlan[] = [];
 // Scope of the last missing-instance scan, so the apply step can re-walk the
@@ -648,6 +664,9 @@ async function getAllComponentSets(): Promise<ComponentSetNode[]> {
   };
 
   for (const page of figma.root.children) {
+    if (isIgnoredPage(page.name)) {
+      continue;
+    }
     visit(page);
   }
   return componentSets;
@@ -779,6 +798,11 @@ async function getInstancesForScope(scope: FixScope): Promise<InstanceNode[]> {
 
   await figma.loadAllPagesAsync();
   for (const page of figma.root.children) {
+    // Skip scaffolding pages (Base components, Test, …) in the file-wide sweep.
+    // Selection/page scopes above are honored as-is.
+    if (isIgnoredPage(page.name)) {
+      continue;
+    }
     for (const child of page.children) {
       collectTopLevelInstances(child, instances);
     }
@@ -819,7 +843,12 @@ type NestedSwappedInstance = {
 // (remote === false) or already broken: a clean remote instance's internals
 // come from the migrated library and cannot hold a deleted *local* variant.
 // Does not mutate anything.
-const NESTED_SWAPPED_MAX_NODES = 50000;
+//
+// Runaway guard only — the walk is naturally finite (a tree, descending into
+// local instances only). Set high enough not to trigger on real libraries; if
+// it ever does, we log it (below) rather than silently stop, because anything
+// past the cap would otherwise be skipped from the migration.
+const NESTED_SWAPPED_MAX_NODES = 1000000;
 
 async function collectNestedSwappedInstances(
   topInstances: InstanceNode[],
@@ -828,9 +857,11 @@ async function collectNestedSwappedInstances(
   const found: NestedSwappedInstance[] = [];
   const reportedNodeIds = new Set<string>();
   let walked = 0;
+  let truncated = false;
 
   const visit = async (node: SceneNode, top: InstanceNode, depth: number): Promise<void> => {
-    if (walked > NESTED_SWAPPED_MAX_NODES) {
+    if (walked >= NESTED_SWAPPED_MAX_NODES) {
+      truncated = true;
       return;
     }
     walked += 1;
@@ -900,6 +931,10 @@ async function collectNestedSwappedInstances(
 
   for (const top of topInstances) {
     await visit(top, top, 0);
+  }
+
+  if (truncated) {
+    console.warn(`[migration] Nested-instance scan hit the ${NESTED_SWAPPED_MAX_NODES}-node cap (${walked} walked, ${found.length} found). Some nested instances past the cap may not have been migrated.`);
   }
 
   return found;
@@ -974,6 +1009,23 @@ async function scanUnsupportedVariants(): Promise<OperationResultPayload> {
         id: componentSet.id,
         name: componentSet.name,
         reason: 'Alert and ValidationMessage keep their color variants — left unchanged.',
+      });
+      continue;
+    }
+
+    // Component sets on ignored pages (Base components, Test, …) are scaffolding,
+    // not real library components — skip them entirely (no migration, no report).
+    let componentSetPage: string | null = null;
+    try {
+      componentSetPage = getPageName(componentSet);
+    } catch {
+      componentSetPage = null;
+    }
+    if (isIgnoredPage(componentSetPage)) {
+      skippedComponentSets.push({
+        id: componentSet.id,
+        name: componentSet.name,
+        reason: 'On an ignored page (e.g. Base components / Test) — skipped.',
       });
       continue;
     }
@@ -2686,6 +2738,9 @@ async function getRebindScopeRoots(scope: FixScope): Promise<SceneNode[]> {
   await figma.loadAllPagesAsync();
   const roots: SceneNode[] = [];
   for (const page of figma.root.children) {
+    if (isIgnoredPage(page.name)) {
+      continue;
+    }
     for (const child of page.children) {
       roots.push(child);
     }
@@ -3098,29 +3153,44 @@ async function runMigration(supportModeId: string | null): Promise<OperationResu
   }
 
   const removed = numberFrom(variantsApply, 'removedCount');
-  const renamed = numberFrom(variantsApply, 'renamedCount');
-  const instancesFixed = numberFrom(instancesApply, 'fixedCount');
-  const nestedFixed = numberFrom(instancesApply, 'nestedFixedCount');
+  // Nested instances are folded into the instance total — users don't need the
+  // top-level/nested distinction.
+  const instancesUpdated = numberFrom(instancesApply, 'fixedCount') + numberFrom(instancesApply, 'nestedFixedCount');
   const supportLayers = numberFrom(instancesApply, 'supportLayerFixedCount');
 
-  // Items that need manual attention — the only detail we surface.
+  // Items that need manual attention — only the ones that affect what gets
+  // published (component sets and their variants).
   const errorComponentSets = arrayFrom(variantsScan, 'errorComponentSetNames');
   const failedVariants = arrayFrom(variantsApply, 'failed');
+  const attentionCount = errorComponentSets.length + failedVariants.length;
+
+  // Unmigrated instances are almost always example instances in the library
+  // doc — not actionable for users, so they are not surfaced in the UI. Keep
+  // them in the console in case we need them.
   const failedInstances = arrayFrom(instancesApply, 'failed');
   const unresolvedNested = arrayFrom(instancesApply, 'nestedFailed');
-  const attentionCount = errorComponentSets.length + failedVariants.length + failedInstances.length + unresolvedNested.length;
+  if (failedInstances.length > 0 || unresolvedNested.length > 0) {
+    console.log('[migration] unmigrated instances (info only, not shown to user): '
+      + JSON.stringify({ failedInstances, unresolvedNested }));
+  }
+
+  const messageParts = [
+    `Removed ${removed} variant${removed === 1 ? '' : 's'}.`,
+    `Updated ${instancesUpdated} instance${instancesUpdated === 1 ? '' : 's'}.`,
+  ];
+  if (supportLayers > 0) {
+    messageParts.push(`Fixed ${supportLayers} support color${supportLayers === 1 ? '' : 's'} applied outside of components.`);
+  }
 
   return {
     createdAt: new Date().toISOString(),
     operation,
     status: 'success',
-    message: `Removed ${removed} variant${removed === 1 ? '' : 's'} and renamed ${renamed}. Updated ${instancesFixed} instance${instancesFixed === 1 ? '' : 's'} (+${nestedFixed} nested). Cleaned up ${supportLayers} support layer${supportLayers === 1 ? '' : 's'}.`,
+    message: messageParts.join(' '),
     details: {
       attentionCount,
       errorComponentSets,
       failedVariants,
-      failedInstances,
-      unresolvedNested,
     },
   };
 }

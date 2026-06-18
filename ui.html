@@ -126,6 +126,15 @@
     margin-top: 8px;
   }
 
+  .panel.panel-done {
+    border-color: var(--figma-color-border-success, #2b7948);
+    background: var(--figma-color-bg-success-tertiary, #f2fbf4);
+  }
+
+  .panel.panel-done .panel-title {
+    color: var(--figma-color-text-success, #2b7948);
+  }
+
   .panel {
     border: 1px solid var(--figma-color-border, #e5e5e5);
     border-radius: 6px;
@@ -465,7 +474,7 @@
       </div>
 
       <section class="is-hidden" id="step-run">
-        <section class="panel">
+        <section class="panel" id="runInputPanel">
           <div class="panel-title">Run migration</div>
           <p>Removes old color variants, updates components, and swaps every affected instance (including nested ones) across the whole file.</p>
           <div class="control-row stacked" style="margin-top: 10px;">
@@ -480,7 +489,7 @@
           </div>
         </section>
         <section class="panel is-hidden" id="runResultPanel">
-          <div class="panel-title">Result</div>
+          <div class="panel-title" id="runResultTitle">Result</div>
           <div class="summary-line" id="runSummary"></div>
           <div class="details-list" id="runDetails"></div>
         </section>
@@ -648,7 +657,9 @@
     const librarySupportModeSelect = document.getElementById("librarySupportMode");
     const rebindLegacyCheckbox = document.getElementById("rebindLegacyVariables");
     const runButton = document.getElementById("runMigration");
+    const runInputPanel = document.getElementById("runInputPanel");
     const runResultPanel = document.getElementById("runResultPanel");
+    const runResultTitle = document.getElementById("runResultTitle");
     const runSummary = document.getElementById("runSummary");
     const runDetails = document.getElementById("runDetails");
     const busyPhase = document.getElementById("busyPhase");
@@ -701,7 +712,10 @@
       }
     }
     function resetLibraryFlowState() {
+      runInputPanel.classList.remove("is-hidden");
       runResultPanel.classList.add("is-hidden");
+      runResultPanel.classList.remove("panel-done");
+      runResultTitle.textContent = "Result";
       setPrimeState("checking");
     }
     function resetSketchesFlowState() {
@@ -831,6 +845,11 @@
       } else if (payload.operation === "apply-library-stuck-instances") {
         resetLibraryButtons();
       }
+      if (payload.operation === "run-migration" && payload.status === "success") {
+        runInputPanel.classList.add("is-hidden");
+        runResultPanel.classList.add("panel-done");
+        runResultTitle.textContent = "Migration complete";
+      }
       setBusy(false);
       activeSummary.textContent = getResultSummary(payload);
       renderDetails(payload);
@@ -861,9 +880,7 @@
       const details = payload.details || {};
       const errorComponentSets = Array.isArray(details.errorComponentSets) ? details.errorComponentSets : [];
       const failedVariants = Array.isArray(details.failedVariants) ? details.failedVariants : [];
-      const failedInstances = Array.isArray(details.failedInstances) ? details.failedInstances : [];
-      const unresolvedNested = Array.isArray(details.unresolvedNested) ? details.unresolvedNested : [];
-      if (errorComponentSets.length === 0 && failedVariants.length === 0 && failedInstances.length === 0 && unresolvedNested.length === 0) {
+      if (errorComponentSets.length === 0 && failedVariants.length === 0) {
         return;
       }
       if (errorComponentSets.length > 0) {
@@ -877,23 +894,6 @@
           nodeId: item.id,
           name: item.name || "Unnamed variant",
           meta: [item.action, item.reason].filter(Boolean).join(" \xB7 ")
-        }));
-      }
-      if (failedInstances.length > 0) {
-        renderRunAttentionList(`Instances that could not be updated (${failedInstances.length})`, failedInstances, (item) => ({
-          nodeId: item.instanceId,
-          name: item.instanceName || "Unnamed instance",
-          meta: item.reason || "Unknown reason"
-        }));
-      }
-      if (unresolvedNested.length > 0) {
-        renderRunAttentionList(`Nested instances not resolved (${unresolvedNested.length})`, unresolvedNested, (item) => ({
-          nodeId: item.nodeId,
-          name: item.nodeName || "Unnamed instance",
-          meta: [
-            item.topInstanceName ? `in ${item.topInstanceName}` : null,
-            item.reason || "Unknown reason"
-          ].filter(Boolean).join(" \xB7 ")
         }));
       }
     }

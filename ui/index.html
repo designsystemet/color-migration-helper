@@ -126,6 +126,15 @@
     margin-top: 8px;
   }
 
+  .panel.panel-done {
+    border-color: var(--figma-color-border-success, #2b7948);
+    background: var(--figma-color-bg-success-tertiary, #f2fbf4);
+  }
+
+  .panel.panel-done .panel-title {
+    color: var(--figma-color-text-success, #2b7948);
+  }
+
   .panel {
     border: 1px solid var(--figma-color-border, #e5e5e5);
     border-radius: 6px;
@@ -465,7 +474,7 @@
       </div>
 
       <section class="is-hidden" id="step-run">
-        <section class="panel">
+        <section class="panel" id="runInputPanel">
           <div class="panel-title">Run migration</div>
           <p>Removes old color variants, updates components, and swaps every affected instance (including nested ones) across the whole file.</p>
           <div class="control-row stacked" style="margin-top: 10px;">
@@ -480,7 +489,7 @@
           </div>
         </section>
         <section class="panel is-hidden" id="runResultPanel">
-          <div class="panel-title">Result</div>
+          <div class="panel-title" id="runResultTitle">Result</div>
           <div class="summary-line" id="runSummary"></div>
           <div class="details-list" id="runDetails"></div>
         </section>

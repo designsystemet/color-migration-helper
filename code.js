@@ -97,6 +97,14 @@
   var PRESERVED_COMPONENT_SET_NAMES = ["Alert", "ValidationMessage"];
   var SEMANTIC_COLOR_GROUPS = ["info", "warning", "danger", "success"];
   var SKIP_MISSING_INSTANCE_MODE_CONTEXTS = ["TableColumn"];
+  var IGNORED_PAGE_NAMES = ["base components", "test"];
+  function isIgnoredPage(pageName) {
+    if (typeof pageName !== "string") {
+      return false;
+    }
+    const cleaned = pageName.toLowerCase().replace(/[^a-z0-9 ]+/g, " ").replace(/\s+/g, " ").trim();
+    return IGNORED_PAGE_NAMES.indexOf(cleaned) !== -1;
+  }
   var pendingUnsupportedVariantPlans = [];
   var pendingMissingInstancePlans = [];
   var pendingMissingInstanceScope = null;
@@ -484,6 +492,9 @@
       }
     };
     for (const page of figma.root.children) {
+      if (isIgnoredPage(page.name)) {
+        continue;
+      }
       visit(page);
     }
     return componentSets;
@@ -585,19 +596,24 @@
     }
     await figma.loadAllPagesAsync();
     for (const page of figma.root.children) {
+      if (isIgnoredPage(page.name)) {
+        continue;
+      }
       for (const child of page.children) {
         collectTopLevelInstances(child, instances);
       }
     }
     return instances;
   }
-  var NESTED_SWAPPED_MAX_NODES = 5e4;
+  var NESTED_SWAPPED_MAX_NODES = 1e6;
   async function collectNestedSwappedInstances(topInstances, reportOperation) {
     const found = [];
     const reportedNodeIds = /* @__PURE__ */ new Set();
     let walked = 0;
+    let truncated = false;
     const visit = async (node, top, depth) => {
-      if (walked > NESTED_SWAPPED_MAX_NODES) {
+      if (walked >= NESTED_SWAPPED_MAX_NODES) {
+        truncated = true;
         return;
       }
       walked += 1;
@@ -650,6 +666,9 @@
     };
     for (const top of topInstances) {
       await visit(top, top, 0);
+    }
+    if (truncated) {
+      console.warn(`[migration] Nested-instance scan hit the ${NESTED_SWAPPED_MAX_NODES}-node cap (${walked} walked, ${found.length} found). Some nested instances past the cap may not have been migrated.`);
     }
     return found;
   }
@@ -709,6 +728,20 @@
           id: componentSet.id,
           name: componentSet.name,
           reason: "Alert and ValidationMessage keep their color variants \u2014 left unchanged."
+        });
+        continue;
+      }
+      let componentSetPage = null;
+      try {
+        componentSetPage = getPageName(componentSet);
+      } catch (e) {
+        componentSetPage = null;
+      }
+      if (isIgnoredPage(componentSetPage)) {
+        skippedComponentSets.push({
+          id: componentSet.id,
+          name: componentSet.name,
+          reason: "On an ignored page (e.g. Base components / Test) \u2014 skipped."
         });
         continue;
       }
@@ -1993,6 +2026,9 @@
     await figma.loadAllPagesAsync();
     const roots = [];
     for (const page of figma.root.children) {
+      if (isIgnoredPage(page.name)) {
+        continue;
+      }
       for (const child of page.children) {
         roots.push(child);
       }
@@ -2275,26 +2311,32 @@
       figma.commitUndo();
     }
     const removed = numberFrom(variantsApply, "removedCount");
-    const renamed = numberFrom(variantsApply, "renamedCount");
-    const instancesFixed = numberFrom(instancesApply, "fixedCount");
-    const nestedFixed = numberFrom(instancesApply, "nestedFixedCount");
+    const instancesUpdated = numberFrom(instancesApply, "fixedCount") + numberFrom(instancesApply, "nestedFixedCount");
     const supportLayers = numberFrom(instancesApply, "supportLayerFixedCount");
     const errorComponentSets = arrayFrom(variantsScan, "errorComponentSetNames");
     const failedVariants = arrayFrom(variantsApply, "failed");
+    const attentionCount = errorComponentSets.length + failedVariants.length;
     const failedInstances = arrayFrom(instancesApply, "failed");
     const unresolvedNested = arrayFrom(instancesApply, "nestedFailed");
-    const attentionCount = errorComponentSets.length + failedVariants.length + failedInstances.length + unresolvedNested.length;
+    if (failedInstances.length > 0 || unresolvedNested.length > 0) {
+      console.log("[migration] unmigrated instances (info only, not shown to user): " + JSON.stringify({ failedInstances, unresolvedNested }));
+    }
+    const messageParts = [
+      `Removed ${removed} variant${removed === 1 ? "" : "s"}.`,
+      `Updated ${instancesUpdated} instance${instancesUpdated === 1 ? "" : "s"}.`
+    ];
+    if (supportLayers > 0) {
+      messageParts.push(`Fixed ${supportLayers} support color${supportLayers === 1 ? "" : "s"} applied outside of components.`);
+    }
     return {
       createdAt: (/* @__PURE__ */ new Date()).toISOString(),
       operation,
       status: "success",
-      message: `Removed ${removed} variant${removed === 1 ? "" : "s"} and renamed ${renamed}. Updated ${instancesFixed} instance${instancesFixed === 1 ? "" : "s"} (+${nestedFixed} nested). Cleaned up ${supportLayers} support layer${supportLayers === 1 ? "" : "s"}.`,
+      message: messageParts.join(" "),
       details: {
         attentionCount,
         errorComponentSets,
-        failedVariants,
-        failedInstances,
-        unresolvedNested
+        failedVariants
       }
     };
   }
