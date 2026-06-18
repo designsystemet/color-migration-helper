@@ -116,41 +116,14 @@
     height: 16px;
   }
 
-  .segmented {
+  #step-run {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 2px;
-    border: 1px solid var(--figma-color-border, #d9d9d9);
-    border-radius: 6px;
-    background: var(--figma-color-bg-secondary, #f7f7f7);
-    padding: 2px;
-  }
-
-  .segment {
-    min-height: 30px;
-    border: 0;
-    border-radius: 4px;
-    background: transparent;
-    color: var(--figma-color-text-secondary, #6b6b6b);
-    cursor: pointer;
-    font: inherit;
-    font-weight: 550;
-    padding: 0 8px;
-  }
-
-  .segment.active {
-    background: var(--figma-color-bg, #ffffff);
-    color: var(--figma-color-text, #1e1e1e);
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
-  }
-
-  .step {
-    display: none;
     gap: 12px;
   }
 
-  .step.active {
-    display: grid;
+  .validation-msg {
+    color: var(--figma-color-text-danger, #c00);
+    margin-top: 8px;
   }
 
   .panel {
@@ -480,34 +453,28 @@
         </button>
       </div>
 
-      <div class="segmented" role="tablist">
-        <button class="segment active" data-step="prime" role="tab" aria-selected="true" aria-controls="step-prime" id="tab-prime">1. Prepare</button>
-        <button class="segment" data-step="run" role="tab" aria-selected="false" aria-controls="step-run" id="tab-run">2. Run migration</button>
-      </div>
-
-      <section class="step active" id="step-prime" role="tabpanel" aria-labelledby="tab-prime" tabindex="0">
-        <div class="status-card status-neutral" id="primeStatus">
-          <span class="status-icon is-hidden" id="primeIcon" aria-hidden="true"></span>
-          <div class="status-body">
-            <p class="status-text" id="primeStatusText">Checking variable state...</p>
-            <p class="status-note is-hidden" id="primeNote"></p>
-            <div class="toolbar is-hidden" id="primeActions" style="margin-top: 10px;">
-              <button class="primary" id="prime">Prepare variables</button>
-            </div>
+      <div class="status-card status-neutral" id="primeStatus">
+        <span class="status-icon is-hidden" id="primeIcon" aria-hidden="true"></span>
+        <div class="status-body">
+          <p class="status-text" id="primeStatusText">Checking variable state...</p>
+          <p class="status-note is-hidden" id="primeNote"></p>
+          <div class="toolbar is-hidden" id="primeActions" style="margin-top: 10px;">
+            <button class="primary" id="prime">Prepare variables</button>
           </div>
         </div>
-      </section>
+      </div>
 
-      <section class="step" id="step-run" role="tabpanel" aria-labelledby="tab-run" tabindex="0">
+      <section class="is-hidden" id="step-run">
         <section class="panel">
           <div class="panel-title">Run migration</div>
-          <p>Removes old color variants, updates components, and swaps every affected instance (including nested ones) across the whole file. First run "1. Prepare" and make sure the new tokens are regenerated and published (the Color collection must have info, warning, danger and success modes).</p>
+          <p>Removes old color variants, updates components, and swaps every affected instance (including nested ones) across the whole file.</p>
           <div class="control-row stacked" style="margin-top: 10px;">
             <label>
               Use this mode for old support variants
               <select id="supportMode"></select>
             </label>
           </div>
+          <p class="validation-msg is-hidden" id="supportModeError">Choose a color to replace "support" before running.</p>
           <div class="toolbar" style="margin-top: 10px;">
             <button class="primary" id="runMigration">Run migration</button>
           </div>
@@ -662,8 +629,7 @@
     const root = document.getElementById("migration-color");
     const viewSections = Array.from(root.querySelectorAll(".view"));
     const targetViewButtons = Array.from(root.querySelectorAll("[data-target-view]"));
-    const segmentButtons = Array.from(root.querySelectorAll(".segment"));
-    const stepPanels = Array.from(root.querySelectorAll(".step"));
+    const stepRun = document.getElementById("step-run");
     const primeButton = document.getElementById("prime");
     const primeStatus = document.getElementById("primeStatus");
     const primeIcon = document.getElementById("primeIcon");
@@ -671,6 +637,7 @@
     const primeNote = document.getElementById("primeNote");
     const primeActions = document.getElementById("primeActions");
     const supportModeSelect = document.getElementById("supportMode");
+    const supportModeError = document.getElementById("supportModeError");
     const libraryFixScopeSelect = document.getElementById("libraryFixScope");
     const scanLibraryButton = document.getElementById("scanLibrary");
     const applyLibraryButton = document.getElementById("applyLibrary");
@@ -701,12 +668,14 @@
     const PRIME_STATES = {
       checking: { cls: "status-neutral", icon: null, text: "Checking variable state...", button: false },
       needs: { cls: "status-warning", icon: "warning", text: "Rename the Main color collection to Color and remove color/main/ from variable names.", button: true },
-      ready: { cls: "status-success", icon: "success", text: "Variables are correct and ready to be updated with Token Studio.", button: false },
+      "needs-tokens": { cls: "status-warning", icon: "warning", text: "Regenerate and publish the updated tokens before migrating \u2014 the Color collection is missing the new color modes.", button: false },
+      ready: { cls: "status-success", icon: "success", text: "Variables are ready.", button: false },
       "not-library": { cls: "status-info", icon: "info", text: "This file does not appear to be a Core UI Kit library. Open the library file to run these steps.", button: false },
       error: { cls: "status-error", icon: "error", text: "Could not prepare variables.", button: true }
     };
     function setPrimeState(state, message) {
       const config = PRIME_STATES[state] || PRIME_STATES.needs;
+      const ready = state === "ready";
       primeStatus.className = "status-card " + config.cls;
       if (config.icon) {
         primeIcon.innerHTML = PRIME_ICONS[config.icon];
@@ -715,8 +684,8 @@
         primeIcon.innerHTML = "";
         primeIcon.classList.add("is-hidden");
       }
-      primeStatusText.textContent = state === "error" && message ? message : config.text;
-      if (state === "ready" && primeReadyNote) {
+      primeStatusText.textContent = (state === "error" || state === "needs-tokens") && message ? message : config.text;
+      if (ready && primeReadyNote) {
         primeNote.textContent = primeReadyNote;
         primeNote.classList.remove("is-hidden");
       } else {
@@ -725,11 +694,15 @@
       }
       primeReadyNote = "";
       primeActions.classList.toggle("is-hidden", !config.button);
+      primeStatus.classList.toggle("is-hidden", ready);
+      stepRun.classList.toggle("is-hidden", !ready);
+      if (ready) {
+        send2("load-color-modes");
+      }
     }
     function resetLibraryFlowState() {
       runResultPanel.classList.add("is-hidden");
       setPrimeState("checking");
-      selectStep("prime");
     }
     function resetSketchesFlowState() {
       libraryResultPanel.classList.add("is-hidden");
@@ -744,19 +717,6 @@
         send2("check-prime-status");
       } else if (viewName === "sketches") {
         resetSketchesFlowState();
-      }
-    }
-    function selectStep(step) {
-      for (const button of segmentButtons) {
-        const isActive = button.dataset.step === step;
-        button.classList.toggle("active", isActive);
-        button.setAttribute("aria-selected", isActive ? "true" : "false");
-      }
-      for (const panel of stepPanels) {
-        panel.classList.toggle("active", panel.id === `step-${step}`);
-      }
-      if (step === "run") {
-        send2("load-color-modes");
       }
     }
     function setBusy(isBusy, message) {
@@ -849,7 +809,7 @@
       }
       if (payload.operation === "check-prime-status") {
         const details = payload.details || {};
-        setPrimeState(details.state || "needs");
+        setPrimeState(details.state || "needs", payload.message);
         setBusy(false);
         return;
       }
@@ -1053,7 +1013,13 @@
     }
     function renderColorModes(payload) {
       const modes = payload.details && Array.isArray(payload.details.modes) ? payload.details.modes : [];
+      supportModeError.classList.add("is-hidden");
       supportModeSelect.innerHTML = "";
+      const placeholder = document.createElement("option");
+      placeholder.value = "";
+      placeholder.textContent = "Select a color\u2026";
+      placeholder.selected = true;
+      supportModeSelect.appendChild(placeholder);
       for (const mode of modes) {
         const option = document.createElement("option");
         option.value = mode.modeId;
@@ -1104,16 +1070,24 @@
     for (const button of targetViewButtons) {
       button.onclick = () => switchView(button.dataset.targetView);
     }
-    for (const button of segmentButtons) {
-      button.onclick = () => selectStep(button.dataset.step);
-    }
     primeButton.onclick = () => {
       setBusy(true, "Preparing variables...");
       send2("prime-variables");
     };
+    supportModeSelect.onchange = () => {
+      if (supportModeSelect.value) {
+        supportModeError.classList.add("is-hidden");
+      }
+    };
     runButton.onclick = () => {
+      if (!supportModeSelect.value) {
+        supportModeError.classList.remove("is-hidden");
+        supportModeSelect.focus();
+        return;
+      }
+      supportModeError.classList.add("is-hidden");
       startOperation("Running migration...", runResultPanel, runSummary, runDetails);
-      send2("run-migration", { supportModeId: supportModeSelect.value || null });
+      send2("run-migration", { supportModeId: supportModeSelect.value });
     };
     scanLibraryButton.onclick = () => {
       resetLibraryButtons();

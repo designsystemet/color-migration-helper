@@ -440,36 +440,50 @@ async function checkPrimeStatus(): Promise<OperationResultPayload> {
     }
   }
 
-  // Three states:
+  // States, in the order the migration progresses through them:
   // - `not-library`: none of the known color collections exist. Almost
   //   certainly not a Core UI Kit library file.
-  // - `ready`: post-migration shape. Color exists, Main color gone, no
-  //   variables still carrying the legacy prefix.
-  // - `needs`: anything in between — at least one signal of a library
-  //   that hasn't been fully prepared.
-  let state: 'not-library' | 'needs' | 'ready';
+  // - `needs`: the variable structure hasn't been renamed yet (Main color still
+  //   present, or variables still carry the legacy prefix). Prepare is needed.
+  // - `needs-tokens`: structure is correct (Color exists, Main color gone) but
+  //   the new semantic color modes aren't there yet — tokens must be
+  //   regenerated/published before the migration can set color modes.
+  // - `ready`: structure is correct AND the semantic modes exist.
+  let state: 'not-library' | 'needs' | 'needs-tokens' | 'ready';
+  let missingModes: string[] = [];
   if (!hasColor && !hasMainColor && !hasSupportColor) {
     state = 'not-library';
   } else if (hasColor && !hasMainColor && prefixedVariableCount === 0) {
-    state = 'ready';
+    const colorCollection = collections.find((c) => c.name === targetCollectionName);
+    const existingModes = colorCollection ? colorCollection.modes.map((m) => normalizeToken(m.name)) : [];
+    missingModes = SEMANTIC_COLOR_GROUPS.filter((group) => !existingModes.includes(group));
+    state = missingModes.length === 0 ? 'ready' : 'needs-tokens';
   } else {
     state = 'needs';
+  }
+
+  let message: string;
+  if (state === 'ready') {
+    message = 'Variables are already prepared.';
+  } else if (state === 'not-library') {
+    message = 'This file does not appear to be a library file.';
+  } else if (state === 'needs-tokens') {
+    message = `The Color collection is missing the mode${missingModes.length === 1 ? '' : 's'}: ${missingModes.join(', ')}. Regenerate and publish tokens first.`;
+  } else {
+    message = 'Variables still need preparation.';
   }
 
   return {
     createdAt: new Date().toISOString(),
     operation,
     status: 'success',
-    message: state === 'ready'
-      ? 'Variables are already prepared.'
-      : state === 'not-library'
-        ? 'This file does not appear to be a library file.'
-        : 'Variables still need preparation.',
+    message,
     details: {
       hasMainColor,
       hasColor,
       hasSupportColor,
       prefixedVariableCount,
+      missingModes: missingModes as unknown as JsonValue,
       state,
     },
   };

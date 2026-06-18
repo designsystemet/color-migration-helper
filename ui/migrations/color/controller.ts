@@ -12,8 +12,7 @@ export function createColorController() {
   const root = document.getElementById('migration-color');
   const viewSections = Array.from(root.querySelectorAll('.view'));
   const targetViewButtons = Array.from(root.querySelectorAll('[data-target-view]'));
-  const segmentButtons = Array.from(root.querySelectorAll('.segment'));
-  const stepPanels = Array.from(root.querySelectorAll('.step'));
+  const stepRun = document.getElementById('step-run');
   const primeButton = document.getElementById('prime');
   const primeStatus = document.getElementById('primeStatus');
   const primeIcon = document.getElementById('primeIcon');
@@ -21,6 +20,7 @@ export function createColorController() {
   const primeNote = document.getElementById('primeNote');
   const primeActions = document.getElementById('primeActions');
   const supportModeSelect = document.getElementById('supportMode');
+  const supportModeError = document.getElementById('supportModeError');
   const libraryFixScopeSelect = document.getElementById('libraryFixScope');
   const scanLibraryButton = document.getElementById('scanLibrary');
   const applyLibraryButton = document.getElementById('applyLibrary');
@@ -60,13 +60,16 @@ export function createColorController() {
   const PRIME_STATES = {
     checking: { cls: 'status-neutral', icon: null, text: 'Checking variable state...', button: false },
     needs: { cls: 'status-warning', icon: 'warning', text: 'Rename the Main color collection to Color and remove color/main/ from variable names.', button: true },
-    ready: { cls: 'status-success', icon: 'success', text: 'Variables are correct and ready to be updated with Token Studio.', button: false },
+    'needs-tokens': { cls: 'status-warning', icon: 'warning', text: 'Regenerate and publish the updated tokens before migrating — the Color collection is missing the new color modes.', button: false },
+    ready: { cls: 'status-success', icon: 'success', text: 'Variables are ready.', button: false },
     'not-library': { cls: 'status-info', icon: 'info', text: 'This file does not appear to be a Core UI Kit library. Open the library file to run these steps.', button: false },
     error: { cls: 'status-error', icon: 'error', text: 'Could not prepare variables.', button: true },
   };
 
   function setPrimeState(state, message) {
     const config = PRIME_STATES[state] || PRIME_STATES.needs;
+    const ready = state === 'ready';
+
     primeStatus.className = 'status-card ' + config.cls;
 
     if (config.icon) {
@@ -77,9 +80,10 @@ export function createColorController() {
       primeIcon.classList.add('is-hidden');
     }
 
-    primeStatusText.textContent = state === 'error' && message ? message : config.text;
+    // The needs-tokens message lists the actual missing modes, so prefer it.
+    primeStatusText.textContent = (state === 'error' || state === 'needs-tokens') && message ? message : config.text;
 
-    if (state === 'ready' && primeReadyNote) {
+    if (ready && primeReadyNote) {
       primeNote.textContent = primeReadyNote;
       primeNote.classList.remove('is-hidden');
     } else {
@@ -90,12 +94,20 @@ export function createColorController() {
     primeReadyNote = '';
 
     primeActions.classList.toggle('is-hidden', !config.button);
+
+    // Single gated screen: when ready, hide the status card and reveal the
+    // migrate box (loading its support-color choices); otherwise show the
+    // status card and keep the migrate box hidden.
+    primeStatus.classList.toggle('is-hidden', ready);
+    stepRun.classList.toggle('is-hidden', !ready);
+    if (ready) {
+      send('load-color-modes');
+    }
   }
 
   function resetLibraryFlowState() {
     runResultPanel.classList.add('is-hidden');
     setPrimeState('checking');
-    selectStep('prime');
   }
 
   function resetSketchesFlowState() {
@@ -113,25 +125,6 @@ export function createColorController() {
       send('check-prime-status');
     } else if (viewName === 'sketches') {
       resetSketchesFlowState();
-    }
-  }
-
-  function selectStep(step) {
-    for (const button of segmentButtons) {
-      const isActive = button.dataset.step === step;
-      button.classList.toggle('active', isActive);
-      button.setAttribute('aria-selected', isActive ? 'true' : 'false');
-    }
-
-    for (const panel of stepPanels) {
-      panel.classList.toggle('active', panel.id === `step-${step}`);
-    }
-
-    // Refresh the support-color modes when the user reaches the run step — the
-    // Color collection may not have existed when the migration was first opened
-    // (e.g. before "1. Prepare" ran).
-    if (step === 'run') {
-      send('load-color-modes');
     }
   }
 
@@ -241,7 +234,7 @@ export function createColorController() {
 
     if (payload.operation === 'check-prime-status') {
       const details = payload.details || {};
-      setPrimeState(details.state || 'needs');
+      setPrimeState(details.state || 'needs', payload.message);
       setBusy(false);
       return;
     }
@@ -496,7 +489,15 @@ export function createColorController() {
 
   function renderColorModes(payload) {
     const modes = payload.details && Array.isArray(payload.details.modes) ? payload.details.modes : [];
+    supportModeError.classList.add('is-hidden');
     supportModeSelect.innerHTML = '';
+
+    // Start on an empty placeholder so the user has to actively pick a mode.
+    const placeholder = document.createElement('option');
+    placeholder.value = '';
+    placeholder.textContent = 'Select a color…';
+    placeholder.selected = true;
+    supportModeSelect.appendChild(placeholder);
 
     for (const mode of modes) {
       const option = document.createElement('option');
@@ -566,18 +567,27 @@ export function createColorController() {
     button.onclick = () => switchView(button.dataset.targetView);
   }
 
-  for (const button of segmentButtons) {
-    button.onclick = () => selectStep(button.dataset.step);
-  }
-
   primeButton.onclick = () => {
     setBusy(true, 'Preparing variables...');
     send('prime-variables');
   };
 
+  supportModeSelect.onchange = () => {
+    if (supportModeSelect.value) {
+      supportModeError.classList.add('is-hidden');
+    }
+  };
+
   runButton.onclick = () => {
+    // Force a deliberate choice for the support replacement color.
+    if (!supportModeSelect.value) {
+      supportModeError.classList.remove('is-hidden');
+      supportModeSelect.focus();
+      return;
+    }
+    supportModeError.classList.add('is-hidden');
     startOperation('Running migration...', runResultPanel, runSummary, runDetails);
-    send('run-migration', { supportModeId: supportModeSelect.value || null });
+    send('run-migration', { supportModeId: supportModeSelect.value });
   };
 
   scanLibraryButton.onclick = () => {

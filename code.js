@@ -309,23 +309,38 @@
       }
     }
     let state;
+    let missingModes = [];
     if (!hasColor && !hasMainColor && !hasSupportColor) {
       state = "not-library";
     } else if (hasColor && !hasMainColor && prefixedVariableCount === 0) {
-      state = "ready";
+      const colorCollection = collections.find((c) => c.name === targetCollectionName);
+      const existingModes = colorCollection ? colorCollection.modes.map((m) => normalizeToken(m.name)) : [];
+      missingModes = SEMANTIC_COLOR_GROUPS.filter((group) => !existingModes.includes(group));
+      state = missingModes.length === 0 ? "ready" : "needs-tokens";
     } else {
       state = "needs";
+    }
+    let message;
+    if (state === "ready") {
+      message = "Variables are already prepared.";
+    } else if (state === "not-library") {
+      message = "This file does not appear to be a library file.";
+    } else if (state === "needs-tokens") {
+      message = `The Color collection is missing the mode${missingModes.length === 1 ? "" : "s"}: ${missingModes.join(", ")}. Regenerate and publish tokens first.`;
+    } else {
+      message = "Variables still need preparation.";
     }
     return {
       createdAt: (/* @__PURE__ */ new Date()).toISOString(),
       operation,
       status: "success",
-      message: state === "ready" ? "Variables are already prepared." : state === "not-library" ? "This file does not appear to be a library file." : "Variables still need preparation.",
+      message,
       details: {
         hasMainColor,
         hasColor,
         hasSupportColor,
         prefixedVariableCount,
+        missingModes,
         state
       }
     };

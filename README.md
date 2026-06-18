@@ -4,16 +4,25 @@ Figma plugin for migrating Core UI Kit files from color variants to variable mod
 
 ## What it does
 
-The plugin opens on a landing screen with two workflows:
+The plugin opens on a landing screen with two workflows.
 
-- **Update library** — run in the library file. Three steps, in order:
-  1. **Prepare** — renames the `Main color` collection to `Color` and strips the `color/main/` prefix off its variables. The plugin checks the current state on entry and only offers the action when needed.
-  2. **Remove variants** — removes `neutral`/`support` (and any semantic) color variants from component sets and cleans up the variant names. `Alert` and `ValidationMessage` are left untouched — they keep their color variants and hardcoded severity colors.
-  3. **Fix in library** — swaps example instances whose old variant was removed to the matching current variant and sets the right color mode.
+### Update library
 
-- **Update sketches** — run in a sketch file after the library has been migrated and republished. Updates instances that are stuck on the pre-migration library version and sets the appropriate color mode.
+Run in the library file. A single state-gated screen checks the variable structure and shows what's needed:
 
-Both instance flows (Fix in library / Update sketches) also clean up loose `Support color` bindings that live directly on layers (frames, text, etc.), share one support-replacement choice, and let you scope the work to the selection, current page, or whole file.
+- **Needs preparation** — offers a **Prepare** action that renames the `Main color` collection to `Color` and strips the `color/main/` prefix off its variables.
+- **Needs tokens** — the structure is correct but the `Color` collection is missing the new color modes (`info`, `warning`, `danger`, `success`); the user is told to regenerate and publish tokens first.
+- **Not a library file** — none of the known color collections exist.
+- **Ready** — shows the **Run migration** box. The user must pick which color mode replaces the old `support` variants, then one run does everything over the whole file as a single undo step:
+  - removes `neutral`/`support` (and any semantic) color variants from component sets and cleans up variant names;
+  - swaps every affected instance — including instances nested inside other instances — to the matching current variant and sets the right color mode;
+  - rebinds loose `Support color` bindings that live directly on layers (frames, text, etc.).
+
+  Progress is reported in phases (checking → components → instances). `Alert` and `ValidationMessage` are left untouched (they keep their color variants and hardcoded severity colors). For `TableColumn` cell/header subcomponents the swap runs but the `neutral` color mode is intentionally left unset.
+
+### Update sketches
+
+Run in a sketch file after the library has been migrated and republished. Updates instances stuck on the pre-migration library version and sets the appropriate color mode, and also rebinds loose `Support color` bindings. Lets you scope the work to the selection, current page, or whole file, and (like the library run) asks for the replacement mode for old `support`.
 
 ## Install guide
 1. Download this repository.
