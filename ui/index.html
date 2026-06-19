@@ -505,9 +505,8 @@
         </button>
       </div>
 
-      <section class="panel">
+      <section class="panel" id="libraryScanInputPanel">
         <div class="panel-title">Update sketches that use this library</div>
-        <p>Find instances stuck on the pre-migration library version and update them to the current one. Also cleans up loose Support color layers (frames, text) in the same scope. Run this in your sketch file after updating the library.</p>
         <div class="control-row stacked" style="margin-top: 10px;">
           <label>
             Scope
@@ -525,21 +524,17 @@
       <section class="panel is-hidden" id="libraryResultPanel">
         <div class="panel-title">Library scan result</div>
         <div class="summary-line" id="librarySummary"></div>
-        <div class="details-list" id="libraryDetails"></div>
         <div class="control-row stacked is-hidden" id="librarySupportChoiceRow" style="margin-top: 10px;">
           <label>
             Replace 'support' with
             <select id="librarySupportMode"></select>
           </label>
         </div>
-        <div style="margin-top: 10px;">
-          <label class="checkbox-row">
-            <input type="checkbox" id="rebindLegacyVariables">
-            <span>Rebind legacy color variables (experimental)</span>
-          </label>
-        </div>
+        <p class="validation-msg is-hidden" id="librarySupportModeError">Choose a color to replace "support" before updating.</p>
+        <div class="details-list" id="libraryDetails"></div>
         <div class="toolbar" style="margin-top: 10px;">
           <button class="primary" id="applyLibrary" disabled>Update instances</button>
+          <button id="scanAgain">Scan again</button>
         </div>
       </section>
 

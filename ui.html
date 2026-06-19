@@ -505,9 +505,8 @@
         </button>
       </div>
 
-      <section class="panel">
+      <section class="panel" id="libraryScanInputPanel">
         <div class="panel-title">Update sketches that use this library</div>
-        <p>Find instances stuck on the pre-migration library version and update them to the current one. Also cleans up loose Support color layers (frames, text) in the same scope. Run this in your sketch file after updating the library.</p>
         <div class="control-row stacked" style="margin-top: 10px;">
           <label>
             Scope
@@ -525,21 +524,17 @@
       <section class="panel is-hidden" id="libraryResultPanel">
         <div class="panel-title">Library scan result</div>
         <div class="summary-line" id="librarySummary"></div>
-        <div class="details-list" id="libraryDetails"></div>
         <div class="control-row stacked is-hidden" id="librarySupportChoiceRow" style="margin-top: 10px;">
           <label>
             Replace 'support' with
             <select id="librarySupportMode"></select>
           </label>
         </div>
-        <div style="margin-top: 10px;">
-          <label class="checkbox-row">
-            <input type="checkbox" id="rebindLegacyVariables">
-            <span>Rebind legacy color variables (experimental)</span>
-          </label>
-        </div>
+        <p class="validation-msg is-hidden" id="librarySupportModeError">Choose a color to replace "support" before updating.</p>
+        <div class="details-list" id="libraryDetails"></div>
         <div class="toolbar" style="margin-top: 10px;">
           <button class="primary" id="applyLibrary" disabled>Update instances</button>
+          <button id="scanAgain">Scan again</button>
         </div>
       </section>
 
@@ -647,14 +642,16 @@
     const supportModeSelect = document.getElementById("supportMode");
     const supportModeError = document.getElementById("supportModeError");
     const libraryFixScopeSelect = document.getElementById("libraryFixScope");
+    const libraryScanInputPanel = document.getElementById("libraryScanInputPanel");
     const scanLibraryButton = document.getElementById("scanLibrary");
+    const scanAgainButton = document.getElementById("scanAgain");
     const applyLibraryButton = document.getElementById("applyLibrary");
     const libraryResultPanel = document.getElementById("libraryResultPanel");
     const librarySummary = document.getElementById("librarySummary");
     const libraryDetails = document.getElementById("libraryDetails");
     const librarySupportChoiceRow = document.getElementById("librarySupportChoiceRow");
     const librarySupportModeSelect = document.getElementById("librarySupportMode");
-    const rebindLegacyCheckbox = document.getElementById("rebindLegacyVariables");
+    const librarySupportModeError = document.getElementById("librarySupportModeError");
     const runButton = document.getElementById("runMigration");
     const runInputPanel = document.getElementById("runInputPanel");
     const runResultPanel = document.getElementById("runResultPanel");
@@ -718,6 +715,7 @@
       setPrimeState("checking");
     }
     function resetSketchesFlowState() {
+      libraryScanInputPanel.classList.remove("is-hidden");
       libraryResultPanel.classList.add("is-hidden");
       resetLibraryButtons();
     }
@@ -740,8 +738,8 @@
       supportModeSelect.disabled = isBusy;
       libraryFixScopeSelect.disabled = isBusy;
       scanLibraryButton.disabled = isBusy;
+      scanAgainButton.disabled = isBusy;
       applyLibraryButton.disabled = isBusy || !applyLibraryButton.dataset.ready;
-      rebindLegacyCheckbox.disabled = isBusy;
       runButton.disabled = isBusy;
       setBusyOverlay(isBusy, message);
     }
@@ -765,11 +763,12 @@
       const ready = details.readyCount || 0;
       const review = details.reviewCount || 0;
       const total = ready + review;
+      const reviewNeedingAttention = Math.max(0, review - (details.instanceSupportFallbackCount || 0));
       let label = "Update instances";
       if (total > 0) {
         label = `Update ${total} instance${total === 1 ? "" : "s"}`;
-        if (review > 0) {
-          label += ` (${review} need${review === 1 ? "s" : ""} review)`;
+        if (reviewNeedingAttention > 0) {
+          label += ` (${reviewNeedingAttention} need${reviewNeedingAttention === 1 ? "s" : ""} review)`;
         }
       }
       applyLibraryButton.textContent = label;
@@ -779,6 +778,11 @@
       const availableModes = Array.isArray(details.availableColorModes) ? details.availableColorModes : [];
       if (supportFallbackCount > 0 && availableModes.length > 0) {
         librarySupportModeSelect.innerHTML = "";
+        const placeholder = document.createElement("option");
+        placeholder.value = "";
+        placeholder.textContent = "Select a color\u2026";
+        placeholder.selected = true;
+        librarySupportModeSelect.appendChild(placeholder);
         for (const mode of availableModes) {
           const option = document.createElement("option");
           option.value = mode.modeId;
@@ -795,6 +799,7 @@
       applyLibraryButton.dataset.ready = "";
       applyLibraryButton.disabled = true;
       librarySupportChoiceRow.classList.add("is-hidden");
+      librarySupportModeError.classList.add("is-hidden");
     }
     function renderOperationProgress(payload) {
       if (payload.phaseLabel) {
@@ -839,8 +844,11 @@
         return;
       }
       setResultTargetForOperation(payload.operation);
-      if (payload.operation === "scan-library-stuck-instances" && payload.status === "preview") {
-        activateLibraryApply(payload.details || {});
+      if (payload.operation === "scan-library-stuck-instances") {
+        libraryScanInputPanel.classList.add("is-hidden");
+        if (payload.status === "preview") {
+          activateLibraryApply(payload.details || {});
+        }
       } else if (payload.operation === "apply-library-stuck-instances") {
         resetLibraryButtons();
       }
@@ -930,11 +938,23 @@
     }
     function renderLibraryDetails(payload) {
       const plans = payload.details && Array.isArray(payload.details.plans) ? payload.details.plans : [];
-      const ready = plans.filter((plan) => plan.status === "ready");
-      if (ready.length > 0) {
-        renderReadyInstancesAccordion(ready);
+      const support = plans.filter((plan) => plan.needsSupportModeChoice);
+      if (support.length > 0) {
+        renderInstanceAccordion(
+          `Instances using the old support color (${support.length})`,
+          support,
+          (plan) => `${plan.pageName || "Unknown page"} \xB7 ${plan.parentName || "Unknown parent"}`
+        );
       }
-      const flagged = plans.filter((plan) => plan.status === "blocked" || plan.status === "review");
+      const collapsed = plans.filter((plan) => plan.becameSingleComponent);
+      if (collapsed.length > 0) {
+        renderInstanceAccordion(
+          `Instances to update manually (${collapsed.length})`,
+          collapsed,
+          (plan) => `${plan.pageName || "Unknown page"} \xB7 ${plan.parentName || "Unknown parent"} \xB7 was ${plan.oldComponentSetName || "Unknown component"}`
+        );
+      }
+      const flagged = plans.filter((plan) => (plan.status === "blocked" || plan.status === "review") && !plan.needsSupportModeChoice && !plan.becameSingleComponent);
       if (flagged.length > 0) {
         const heading = document.createElement("div");
         heading.className = "detail-meta";
@@ -969,15 +989,15 @@
         }
       }
     }
-    function renderReadyInstancesAccordion(readyPlans) {
+    function renderInstanceAccordion(summaryText, plans, buildMeta) {
       const accordion = document.createElement("details");
       accordion.className = "instances-accordion";
       const summary = document.createElement("summary");
-      summary.textContent = `Ready instances (${readyPlans.length})`;
+      summary.textContent = summaryText;
       accordion.appendChild(summary);
       const list = document.createElement("div");
       list.className = "instance-list";
-      for (const plan of readyPlans) {
+      for (const plan of plans) {
         const button = document.createElement("button");
         button.className = "instance-link";
         button.dataset.instanceId = plan.instanceId;
@@ -986,9 +1006,7 @@
         name.textContent = plan.instanceName || "Unnamed instance";
         const meta = document.createElement("div");
         meta.className = "instance-link-meta";
-        const oldColor = formatOptionalValue(plan.oldColorValue);
-        const targetMode = plan.targetModeName || "Default";
-        meta.textContent = `${plan.pageName || "Unknown page"} \xB7 ${plan.parentName || "Unknown parent"} \xB7 ${oldColor} \u2192 ${targetMode}`;
+        meta.textContent = buildMeta(plan);
         button.append(name, meta);
         button.onclick = () => {
           focusNode(plan.instanceId);
@@ -1055,11 +1073,13 @@
       }
       if (payload.operation === "scan-library-stuck-instances") {
         const ready = details.readyCount || 0;
-        const review = details.reviewCount || 0;
-        const blocked = details.blockedCount || 0;
-        const supportFallback = details.supportFallbackCount || 0;
-        const supportSuffix = supportFallback > 0 ? ` Pick a fallback color below to replace 'support'.` : "";
-        return `Scanned ${details.scannedInstanceCount || 0} instances. ${ready} ready, ${review} need review, ${blocked} blocked.${supportLayerScanSuffix(details)}${supportSuffix}`;
+        const supportInstances = details.instanceSupportFallbackCount || 0;
+        const review = Math.max(0, (details.reviewCount || 0) - supportInstances);
+        const collapsed = details.becameSingleComponentCount || 0;
+        const blocked = Math.max(0, (details.blockedCount || 0) - collapsed);
+        const supportPart = supportInstances > 0 ? ` ${supportInstances} use the old support color (pick a replacement below).` : "";
+        const collapsedPart = collapsed > 0 ? ` ${collapsed} instance${collapsed === 1 ? " needs" : "s need"} to be updated manually (see below).` : "";
+        return `Scanned ${details.scannedInstanceCount || 0} instances. ${ready} ready, ${review} need review, ${blocked} blocked.${supportPart}${collapsedPart}${supportLayerScanSuffix(details)}`;
       }
       if (payload.operation === "apply-library-stuck-instances") {
         return `Updated ${details.fixedCount || 0} instance${details.fixedCount === 1 ? "" : "s"}. ${details.failedCount || 0} update${details.failedCount === 1 ? "" : "s"} failed.${supportLayerApplySuffix(details)}`;
@@ -1095,13 +1115,26 @@
         scope: libraryFixScopeSelect.value
       });
     };
+    scanAgainButton.onclick = () => {
+      resetSketchesFlowState();
+    };
+    librarySupportModeSelect.onchange = () => {
+      if (librarySupportModeSelect.value) {
+        librarySupportModeError.classList.add("is-hidden");
+      }
+    };
     applyLibraryButton.onclick = () => {
       const supportFallbackVisible = !librarySupportChoiceRow.classList.contains("is-hidden");
+      if (supportFallbackVisible && !librarySupportModeSelect.value) {
+        librarySupportModeError.classList.remove("is-hidden");
+        librarySupportModeSelect.focus();
+        return;
+      }
+      librarySupportModeError.classList.add("is-hidden");
       const supportFallbackModeId = supportFallbackVisible ? librarySupportModeSelect.value || null : null;
       startOperation("Updating library instances...", libraryResultPanel, librarySummary, libraryDetails);
       send2("apply-library-stuck-instances", {
-        supportFallbackModeId,
-        rebindLegacyVariables: rebindLegacyCheckbox.checked
+        supportFallbackModeId
       });
     };
     return {

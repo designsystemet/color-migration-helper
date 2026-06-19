@@ -54,6 +54,11 @@ type LibraryStuckInstancePlan = {
   targetComponentId: string | null;
   targetComponentName: string | null;
   needsSupportModeChoice: boolean;
+  // True when the old set collapsed to a single standalone component in the
+  // library update (color was its only variant dimension). These can't be
+  // migrated automatically — the set key is gone — so they're surfaced for a
+  // manual update.
+  becameSingleComponent: boolean;
   status: 'ready' | 'blocked' | 'review';
   reason?: string;
 };
@@ -2120,6 +2125,30 @@ function findVariantByNonColorProps(componentSet: ComponentSetNode, instance: In
   return null;
 }
 
+// A pre-migration set whose variants differ only by the color property
+// collapses to a single standalone component once the color variants are
+// removed (color becomes a mode). When that happens the set's key is deleted,
+// so importComponentSetByKeyAsync can no longer resolve it and the stuck
+// instances must be re-linked by hand. Read entirely from the old set cached
+// in this file — no library access needed.
+function componentSetCollapsesOnColor(componentSet: ComponentSetNode): boolean {
+  let groups: { [property: string]: { values: string[] } };
+  try {
+    groups = componentSet.variantGroupProperties;
+  } catch {
+    return false;
+  }
+  const propNames = Object.keys(groups);
+  if (!propNames.some(isColorVariantPropertyName)) {
+    return false;
+  }
+  // Collapses only if color is the sole dimension that distinguishes the
+  // variants — every other variant property must be single-valued.
+  return propNames.every(
+    (name) => isColorVariantPropertyName(name) || groups[name].values.length <= 1,
+  );
+}
+
 function getInstanceColorPropertyValue(instance: InstanceNode): string | null {
   const props = instance.componentProperties;
   for (const propName of Object.keys(props)) {
@@ -2174,7 +2203,7 @@ async function scanLibraryStuckInstances(scope: FixScope): Promise<OperationResu
 
   const instances = await getInstancesForScope(scope);
 
-  const candidates: Array<{ instance: InstanceNode; colorValue: string; oldComponentSetKey: string; oldComponentSetName: string }> = [];
+  const candidates: Array<{ instance: InstanceNode; colorValue: string; oldComponentSetKey: string; oldComponentSetName: string; collapsesOnColor: boolean }> = [];
 
   for (let index = 0; index < instances.length; index += 1) {
     const instance = instances[index];
@@ -2202,6 +2231,7 @@ async function scanLibraryStuckInstances(scope: FixScope): Promise<OperationResu
       colorValue,
       oldComponentSetKey: oldComponentSet.key,
       oldComponentSetName: oldComponentSet.name,
+      collapsesOnColor: componentSetCollapsesOnColor(oldComponentSet),
     });
 
     if ((index + 1) % 10 === 0 || index + 1 === instances.length) {
@@ -2281,16 +2311,25 @@ async function scanLibraryStuckInstances(scope: FixScope): Promise<OperationResu
       targetComponentId: null,
       targetComponentName: null,
       needsSupportModeChoice: false,
+      becameSingleComponent: false,
       status: 'blocked',
       reason: undefined,
     };
 
     const newSet = newComponentSetByKey.get(candidate.oldComponentSetKey);
     if (!newSet) {
-      const importError = importErrorByKey.get(candidate.oldComponentSetKey);
-      plan.reason = importError
-        ? `Could not import "${candidate.oldComponentSetName}" from library: ${importError}`
-        : `Could not import "${candidate.oldComponentSetName}" from library.`;
+      // A set that only varied by color collapses to a standalone component on
+      // update, which deletes the set key — hence the failed import. Flag it
+      // distinctly so the UI can tell the user to re-link these by hand.
+      if (candidate.collapsesOnColor) {
+        plan.becameSingleComponent = true;
+        plan.reason = `"${candidate.oldComponentSetName}" became a single component when its color variants were removed. Update these instances manually.`;
+      } else {
+        const importError = importErrorByKey.get(candidate.oldComponentSetKey);
+        plan.reason = importError
+          ? `Could not import "${candidate.oldComponentSetName}" from library: ${importError}`
+          : `Could not import "${candidate.oldComponentSetName}" from library.`;
+      }
       plans.push(plan);
       continue;
     }
@@ -2362,6 +2401,7 @@ async function scanLibraryStuckInstances(scope: FixScope): Promise<OperationResu
   const reviewCount = plans.filter((p) => p.status === 'review').length;
   const blockedCount = plans.filter((p) => p.status === 'blocked').length;
   const instanceSupportFallbackCount = plans.filter((p) => p.needsSupportModeChoice).length;
+  const becameSingleComponentCount = plans.filter((p) => p.becameSingleComponent).length;
 
   // Fold in loose Support color cleanup over the same scope, using the Color
   // collection discovered while importing the stuck component sets. Without a
@@ -2404,6 +2444,8 @@ async function scanLibraryStuckInstances(scope: FixScope): Promise<OperationResu
       reviewCount,
       blockedCount,
       supportFallbackCount,
+      instanceSupportFallbackCount,
+      becameSingleComponentCount,
       supportLayerReadyCount: looseScan.readyCount,
       supportLayerFallbackCount: looseScan.supportFallbackCount,
       supportLayerReviewCount: looseScan.reviewCount,
@@ -2522,91 +2564,15 @@ async function resolveLegacyColorPaintTarget(
   };
 }
 
-// Walk a subtree (including into nested instances) and replace any
-// fill/stroke boundVariables.color binding that points to a legacy color
-// variable with the matching new Color-collection variable. A binding
-// qualifies as "legacy" if:
-//   - its collection is Main color, Support color, or Neutral color, OR
-//   - its name matches color/(main|support|neutral)/* — catches Semantic-
-//     collection bindings to legacy-named variables (the neutral case).
-async function rebindLegacyColorBindingsInSubtree(
-  node: SceneNode,
-  newColorVariableMap: Map<string, Variable>,
-  variableCache: Map<string, Variable | null>,
-  collectionCache: Map<string, VariableCollection | null>,
-): Promise<RebindStats> {
-  const stats: RebindStats = { rebound: 0, skipped: 0, failed: 0 };
-
-  async function evaluatePaints(paints: ReadonlyArray<Paint>): Promise<Paint[] | null> {
-    let mutated = false;
-    const next: Paint[] = paints.slice();
-    for (let i = 0; i < next.length; i += 1) {
-      const target = await resolveLegacyColorPaintTarget(next[i], newColorVariableMap, variableCache, collectionCache);
-      if (!target) {
-        continue;
-      }
-      if (!target.newVariable) {
-        stats.skipped += 1;
-        continue;
-      }
-
-      try {
-        // resolveLegacyColorPaintTarget only returns a target for SolidPaint.
-        next[i] = figma.variables.setBoundVariableForPaint(next[i] as SolidPaint, 'color', target.newVariable);
-        mutated = true;
-        stats.rebound += 1;
-      } catch {
-        stats.failed += 1;
-      }
-    }
-    return mutated ? next : null;
-  }
-
-  if ('fills' in node && Array.isArray(node.fills)) {
-    const updated = await evaluatePaints(node.fills);
-    if (updated) {
-      node.fills = updated;
-    }
-  }
-  if ('strokes' in node && Array.isArray(node.strokes)) {
-    const updated = await evaluatePaints(node.strokes);
-    if (updated) {
-      node.strokes = updated;
-    }
-  }
-
-  if ('children' in node && Array.isArray(node.children)) {
-    for (const child of node.children) {
-      const childStats = await rebindLegacyColorBindingsInSubtree(child, newColorVariableMap, variableCache, collectionCache);
-      stats.rebound += childStats.rebound;
-      stats.skipped += childStats.skipped;
-      stats.failed += childStats.failed;
-    }
-  }
-
-  return stats;
-}
-
-async function applyLibraryStuckInstancePlans(supportFallbackModeId: string | null, rebindLegacyVariables: boolean): Promise<OperationResultPayload> {
+async function applyLibraryStuckInstancePlans(supportFallbackModeId: string | null): Promise<OperationResultPayload> {
   const operation ='apply-library-stuck-instances';
   const plans = pendingLibraryStuckInstancePlans;
 
   let fixedCount = 0;
   let failedCount = 0;
-  let totalRebound = 0;
-  let totalRebindSkipped = 0;
-  let totalRebindFailed = 0;
   const failures: Array<{ instanceId: string; instanceName: string; reason: string }> = [];
 
   const applicablePlans = plans.filter((p) => p.status !== 'blocked');
-
-  // Pre-build the name→variable map for the new Color collection so we only
-  // do the variableIds walk once across all instances. Keyed by the
-  // collection ID found during scan — assumes all plans share the same
-  // target Color collection (true for a single-library migration).
-  const colorVariableMaps = new Map<string, Map<string, Variable>>();
-  const rebindVariableCache = new Map<string, Variable | null>();
-  const rebindCollectionCache = new Map<string, VariableCollection | null>();
 
   for (let index = 0; index < applicablePlans.length; index += 1) {
     const plan = applicablePlans[index];
@@ -2651,23 +2617,6 @@ async function applyLibraryStuckInstancePlans(supportFallbackModeId: string | nu
         }
       }
 
-      if (rebindLegacyVariables && plan.targetColorCollectionId) {
-        let variableMap = colorVariableMaps.get(plan.targetColorCollectionId);
-        if (!variableMap) {
-          variableMap = await buildNewColorVariableMap(plan.targetColorCollectionId);
-          colorVariableMaps.set(plan.targetColorCollectionId, variableMap);
-        }
-        const stats = await rebindLegacyColorBindingsInSubtree(
-          instanceNode,
-          variableMap,
-          rebindVariableCache,
-          rebindCollectionCache,
-        );
-        totalRebound += stats.rebound;
-        totalRebindSkipped += stats.skipped;
-        totalRebindFailed += stats.failed;
-      }
-
       fixedCount += 1;
     } catch (error) {
       failedCount += 1;
@@ -2698,9 +2647,6 @@ async function applyLibraryStuckInstancePlans(supportFallbackModeId: string | nu
     figma.commitUndo();
   }
 
-  const rebindSuffix = rebindLegacyVariables && totalRebound + totalRebindSkipped + totalRebindFailed > 0
-    ? ` Rebound ${totalRebound} legacy color binding${totalRebound === 1 ? '' : 's'}${totalRebindSkipped > 0 ? `, ${totalRebindSkipped} unmatched` : ''}${totalRebindFailed > 0 ? `, ${totalRebindFailed} failed` : ''}.`
-    : '';
   const cleanupSuffix = cleanup.nodeFixedCount > 0
     ? ` Cleaned up ${cleanup.reboundCount} support binding${cleanup.reboundCount === 1 ? '' : 's'} on ${cleanup.nodeFixedCount} layer${cleanup.nodeFixedCount === 1 ? '' : 's'}.`
     : '';
@@ -2709,13 +2655,10 @@ async function applyLibraryStuckInstancePlans(supportFallbackModeId: string | nu
     createdAt: new Date().toISOString(),
     operation,
     status: failedCount + cleanup.failedCount > 0 ? 'error' : 'success',
-    message: `Updated ${fixedCount} instance${fixedCount === 1 ? '' : 's'}${failedCount > 0 ? `, failed ${failedCount}` : ''}.${rebindSuffix}${cleanupSuffix}`,
+    message: `Updated ${fixedCount} instance${fixedCount === 1 ? '' : 's'}${failedCount > 0 ? `, failed ${failedCount}` : ''}.${cleanupSuffix}`,
     details: {
       fixedCount,
       failedCount,
-      reboundCount: totalRebound,
-      rebindSkippedCount: totalRebindSkipped,
-      rebindFailedCount: totalRebindFailed,
       supportLayerFixedCount: cleanup.nodeFixedCount,
       supportBindingReboundCount: cleanup.reboundCount,
       supportLayerFailedCount: cleanup.failedCount,
@@ -3208,8 +3151,8 @@ export const colorMigration: MigrationModule = {
       return scanLibraryStuckInstances(a.scope);
     },
     'apply-library-stuck-instances': (args) => {
-      const a = (args || {}) as { supportFallbackModeId: string | null; rebindLegacyVariables: boolean };
-      return applyLibraryStuckInstancePlans(a.supportFallbackModeId, a.rebindLegacyVariables);
+      const a = (args || {}) as { supportFallbackModeId: string | null };
+      return applyLibraryStuckInstancePlans(a.supportFallbackModeId);
     },
     'run-migration': (args) => {
       const a = (args || {}) as { supportModeId: string | null };

@@ -1562,6 +1562,21 @@
     }
     return null;
   }
+  function componentSetCollapsesOnColor(componentSet) {
+    let groups;
+    try {
+      groups = componentSet.variantGroupProperties;
+    } catch (e) {
+      return false;
+    }
+    const propNames = Object.keys(groups);
+    if (!propNames.some(isColorVariantPropertyName)) {
+      return false;
+    }
+    return propNames.every(
+      (name) => isColorVariantPropertyName(name) || groups[name].values.length <= 1
+    );
+  }
   function getInstanceColorPropertyValue(instance) {
     const props = instance.componentProperties;
     for (const propName of Object.keys(props)) {
@@ -1627,7 +1642,8 @@
         instance,
         colorValue,
         oldComponentSetKey: oldComponentSet.key,
-        oldComponentSetName: oldComponentSet.name
+        oldComponentSetName: oldComponentSet.name,
+        collapsesOnColor: componentSetCollapsesOnColor(oldComponentSet)
       });
       if ((index + 1) % 10 === 0 || index + 1 === instances.length) {
         await reportProgress({
@@ -1698,13 +1714,19 @@
         targetComponentId: null,
         targetComponentName: null,
         needsSupportModeChoice: false,
+        becameSingleComponent: false,
         status: "blocked",
         reason: void 0
       };
       const newSet = newComponentSetByKey.get(candidate.oldComponentSetKey);
       if (!newSet) {
-        const importError = importErrorByKey.get(candidate.oldComponentSetKey);
-        plan.reason = importError ? `Could not import "${candidate.oldComponentSetName}" from library: ${importError}` : `Could not import "${candidate.oldComponentSetName}" from library.`;
+        if (candidate.collapsesOnColor) {
+          plan.becameSingleComponent = true;
+          plan.reason = `"${candidate.oldComponentSetName}" became a single component when its color variants were removed. Update these instances manually.`;
+        } else {
+          const importError = importErrorByKey.get(candidate.oldComponentSetKey);
+          plan.reason = importError ? `Could not import "${candidate.oldComponentSetName}" from library: ${importError}` : `Could not import "${candidate.oldComponentSetName}" from library.`;
+        }
         plans.push(plan);
         continue;
       }
@@ -1759,6 +1781,7 @@
     const reviewCount = plans.filter((p) => p.status === "review").length;
     const blockedCount = plans.filter((p) => p.status === "blocked").length;
     const instanceSupportFallbackCount = plans.filter((p) => p.needsSupportModeChoice).length;
+    const becameSingleComponentCount = plans.filter((p) => p.becameSingleComponent).length;
     let looseScan = {
       plans: [],
       scannedNodeCount: 0,
@@ -1790,6 +1813,8 @@
         reviewCount,
         blockedCount,
         supportFallbackCount,
+        instanceSupportFallbackCount,
+        becameSingleComponentCount,
         supportLayerReadyCount: looseScan.readyCount,
         supportLayerFallbackCount: looseScan.supportFallbackCount,
         supportLayerReviewCount: looseScan.reviewCount,
@@ -1865,65 +1890,13 @@
       newVariable: newColorVariableMap.get(normalizeToken(classified.lookupName)) || null
     };
   }
-  async function rebindLegacyColorBindingsInSubtree(node, newColorVariableMap, variableCache, collectionCache) {
-    const stats = { rebound: 0, skipped: 0, failed: 0 };
-    async function evaluatePaints(paints) {
-      let mutated = false;
-      const next = paints.slice();
-      for (let i = 0; i < next.length; i += 1) {
-        const target = await resolveLegacyColorPaintTarget(next[i], newColorVariableMap, variableCache, collectionCache);
-        if (!target) {
-          continue;
-        }
-        if (!target.newVariable) {
-          stats.skipped += 1;
-          continue;
-        }
-        try {
-          next[i] = figma.variables.setBoundVariableForPaint(next[i], "color", target.newVariable);
-          mutated = true;
-          stats.rebound += 1;
-        } catch (e) {
-          stats.failed += 1;
-        }
-      }
-      return mutated ? next : null;
-    }
-    if ("fills" in node && Array.isArray(node.fills)) {
-      const updated = await evaluatePaints(node.fills);
-      if (updated) {
-        node.fills = updated;
-      }
-    }
-    if ("strokes" in node && Array.isArray(node.strokes)) {
-      const updated = await evaluatePaints(node.strokes);
-      if (updated) {
-        node.strokes = updated;
-      }
-    }
-    if ("children" in node && Array.isArray(node.children)) {
-      for (const child of node.children) {
-        const childStats = await rebindLegacyColorBindingsInSubtree(child, newColorVariableMap, variableCache, collectionCache);
-        stats.rebound += childStats.rebound;
-        stats.skipped += childStats.skipped;
-        stats.failed += childStats.failed;
-      }
-    }
-    return stats;
-  }
-  async function applyLibraryStuckInstancePlans(supportFallbackModeId, rebindLegacyVariables) {
+  async function applyLibraryStuckInstancePlans(supportFallbackModeId) {
     const operation = "apply-library-stuck-instances";
     const plans = pendingLibraryStuckInstancePlans;
     let fixedCount = 0;
     let failedCount = 0;
-    let totalRebound = 0;
-    let totalRebindSkipped = 0;
-    let totalRebindFailed = 0;
     const failures = [];
     const applicablePlans = plans.filter((p) => p.status !== "blocked");
-    const colorVariableMaps = /* @__PURE__ */ new Map();
-    const rebindVariableCache = /* @__PURE__ */ new Map();
-    const rebindCollectionCache = /* @__PURE__ */ new Map();
     for (let index = 0; index < applicablePlans.length; index += 1) {
       const plan = applicablePlans[index];
       try {
@@ -1956,22 +1929,6 @@
             instanceNode.setExplicitVariableModeForCollection(colorCollection, effectiveModeId);
           }
         }
-        if (rebindLegacyVariables && plan.targetColorCollectionId) {
-          let variableMap = colorVariableMaps.get(plan.targetColorCollectionId);
-          if (!variableMap) {
-            variableMap = await buildNewColorVariableMap(plan.targetColorCollectionId);
-            colorVariableMaps.set(plan.targetColorCollectionId, variableMap);
-          }
-          const stats = await rebindLegacyColorBindingsInSubtree(
-            instanceNode,
-            variableMap,
-            rebindVariableCache,
-            rebindCollectionCache
-          );
-          totalRebound += stats.rebound;
-          totalRebindSkipped += stats.skipped;
-          totalRebindFailed += stats.failed;
-        }
         fixedCount += 1;
       } catch (error) {
         failedCount += 1;
@@ -1995,19 +1952,15 @@
     if (fixedCount > 0 || cleanup.reboundCount > 0 || cleanup.modeSetCount > 0) {
       figma.commitUndo();
     }
-    const rebindSuffix = rebindLegacyVariables && totalRebound + totalRebindSkipped + totalRebindFailed > 0 ? ` Rebound ${totalRebound} legacy color binding${totalRebound === 1 ? "" : "s"}${totalRebindSkipped > 0 ? `, ${totalRebindSkipped} unmatched` : ""}${totalRebindFailed > 0 ? `, ${totalRebindFailed} failed` : ""}.` : "";
     const cleanupSuffix = cleanup.nodeFixedCount > 0 ? ` Cleaned up ${cleanup.reboundCount} support binding${cleanup.reboundCount === 1 ? "" : "s"} on ${cleanup.nodeFixedCount} layer${cleanup.nodeFixedCount === 1 ? "" : "s"}.` : "";
     return {
       createdAt: (/* @__PURE__ */ new Date()).toISOString(),
       operation,
       status: failedCount + cleanup.failedCount > 0 ? "error" : "success",
-      message: `Updated ${fixedCount} instance${fixedCount === 1 ? "" : "s"}${failedCount > 0 ? `, failed ${failedCount}` : ""}.${rebindSuffix}${cleanupSuffix}`,
+      message: `Updated ${fixedCount} instance${fixedCount === 1 ? "" : "s"}${failedCount > 0 ? `, failed ${failedCount}` : ""}.${cleanupSuffix}`,
       details: {
         fixedCount,
         failedCount,
-        reboundCount: totalRebound,
-        rebindSkippedCount: totalRebindSkipped,
-        rebindFailedCount: totalRebindFailed,
         supportLayerFixedCount: cleanup.nodeFixedCount,
         supportBindingReboundCount: cleanup.reboundCount,
         supportLayerFailedCount: cleanup.failedCount,
@@ -2354,7 +2307,7 @@
       },
       "apply-library-stuck-instances": (args) => {
         const a = args || {};
-        return applyLibraryStuckInstancePlans(a.supportFallbackModeId, a.rebindLegacyVariables);
+        return applyLibraryStuckInstancePlans(a.supportFallbackModeId);
       },
       "run-migration": (args) => {
         const a = args || {};
