@@ -334,7 +334,7 @@
     } else if (state === "not-library") {
       message = "This file does not appear to be a library file.";
     } else if (state === "needs-tokens") {
-      message = `The Color collection is missing the mode${missingModes.length === 1 ? "" : "s"}: ${missingModes.join(", ")}. Regenerate and publish tokens first.`;
+      message = `The Color collection is missing the mode${missingModes.length === 1 ? "" : "s"}: ${missingModes.join(", ")}. Export new tokens from Token Studio first.`;
     } else {
       message = "Variables still need preparation.";
     }
@@ -449,7 +449,7 @@
       if ((index + 1) % 10 === 0 || index + 1 === total) {
         postOperationProgress({
           operation,
-          message: "Preparing variables...",
+          message: "Renaming variables...",
           processed: index + 1,
           total
         });
@@ -2290,7 +2290,7 @@
         createdAt: (/* @__PURE__ */ new Date()).toISOString(),
         operation,
         status: "error",
-        message: `The Color collection is missing the mode${missingModes.length === 1 ? "" : "s"}: ${missingModes.join(", ")}. Regenerate and publish tokens (Token Studio) with the new structure before running.`,
+        message: `The Color collection is missing the mode${missingModes.length === 1 ? "" : "s"}: ${missingModes.join(", ")}. Export new tokens from Token Studio first.`,
         details: { missingModes }
       };
     }

@@ -62,10 +62,10 @@ export function createColorController() {
   const PRIME_STATES = {
     checking: { cls: 'status-neutral', icon: null, text: 'Checking variable state...', button: false },
     needs: { cls: 'status-warning', icon: 'warning', text: 'Rename the Main color collection to Color and remove color/main/ from variable names.', button: true },
-    'needs-tokens': { cls: 'status-warning', icon: 'warning', text: 'Regenerate and publish the updated tokens before migrating — the Color collection is missing the new color modes.', button: false },
+    'needs-tokens': { cls: 'status-warning', icon: 'warning', text: 'The Color collection is missing the new color modes. Export new tokens from Token Studio first.', button: false },
     ready: { cls: 'status-success', icon: 'success', text: 'Variables are ready.', button: false },
     'not-library': { cls: 'status-info', icon: 'info', text: 'This file does not appear to be a Core UI Kit library. Open the library file to run these steps.', button: false },
-    error: { cls: 'status-error', icon: 'error', text: 'Could not prepare variables.', button: true },
+    error: { cls: 'status-error', icon: 'error', text: 'Could not rename variables.', button: true },
   };
 
   function setPrimeState(state, message) {
@@ -560,7 +560,7 @@ export function createColorController() {
   }
 
   primeButton.onclick = () => {
-    setBusy(true, 'Preparing variables...');
+    setBusy(true, 'Renaming variables...');
     send('prime-variables');
   };
 
@@ -604,7 +604,6 @@ export function createColorController() {
   return {
     id: 'color',
     title: 'Color migration',
-    description: 'Migrate color variants and modes, and clean up Support color variables.',
     icon: COLOR_ICON,
     rootId: 'migration-color',
     enter() {
