@@ -52,5 +52,19 @@ export function initShell(controllers) {
     el.addEventListener('click', () => showPicker(picker, controllers));
   }
 
+  // With only one migration there's nothing to pick, so skip the picker and go
+  // straight into it — and hide the "back to migrations" button, which would
+  // otherwise lead to an empty picker. The picker and that button reappear
+  // automatically once a second migration is registered. See the README
+  // ("Migration picker") for why this is hidden rather than removed.
+  if (controllers.length === 1) {
+    for (const el of document.querySelectorAll('[data-go-to-migrations]')) {
+      const header = el.closest('.view-header');
+      (header || el).classList.add('is-hidden');
+    }
+    enterMigration(controllers[0], picker, controllers);
+    return;
+  }
+
   showPicker(picker, controllers);
 }

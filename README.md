@@ -50,6 +50,10 @@ ui/
 
 Backend messages use one generic envelope, `{ type: 'run', domain, operation, args }` (plus a shared `focus-node`). The harness router dispatches `run` to the matching module's operation; results come back as an `OperationResultPayload` tagged with the domain. The UI shell renders the picker from the registered controllers and routes results to the active one.
 
+### Migration picker
+
+The first screen is a picker that lists one button per registered migration. **It is currently hidden:** while only one migration (color) is registered, `initShell` skips the picker and opens that migration directly, and hides the "back to migrations" button (which would otherwise lead to an empty picker). The picker code is intentionally kept, not removed — as soon as a second migration is registered in `ui/main.ts`, `controllers.length > 1` and the picker (and back button) reappear automatically with no further changes. See `ui/core/shell.ts`.
+
 ### Adding a migration
 
 1. Backend: add `src/migrations/<name>/index.ts` exporting a `MigrationModule` (`id`, `title`, `description`, `operations`), and register it in `startPlugin([...])` in `src/main.ts`.

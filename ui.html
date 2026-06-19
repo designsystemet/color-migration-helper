@@ -623,6 +623,14 @@
     for (const el of document.querySelectorAll("[data-go-to-migrations]")) {
       el.addEventListener("click", () => showPicker(picker, controllers));
     }
+    if (controllers.length === 1) {
+      for (const el of document.querySelectorAll("[data-go-to-migrations]")) {
+        const header = el.closest(".view-header");
+        (header || el).classList.add("is-hidden");
+      }
+      enterMigration(controllers[0], picker, controllers);
+      return;
+    }
     showPicker(picker, controllers);
   }
 
