@@ -489,7 +489,7 @@ async function checkPrimeStatus(): Promise<OperationResultPayload> {
   } else if (state === 'not-library') {
     message = 'This file does not appear to be a library file.';
   } else if (state === 'needs-tokens') {
-    message = `The Color collection is missing the mode${missingModes.length === 1 ? '' : 's'}: ${missingModes.join(', ')}. Export new tokens from Token Studio first.`;
+    message = `The Color collection is missing the mode${missingModes.length === 1 ? '' : 's'}: ${missingModes.join(', ')}. Export new variables from Token Studio first.`;
   } else {
     message = 'Variables still need preparation.';
   }
@@ -3065,7 +3065,7 @@ async function runMigration(supportModeId: string | null): Promise<OperationResu
       createdAt: new Date().toISOString(),
       operation,
       status: 'error',
-      message: `The Color collection is missing the mode${missingModes.length === 1 ? '' : 's'}: ${missingModes.join(', ')}. Export new tokens from Token Studio first.`,
+      message: `The Color collection is missing the mode${missingModes.length === 1 ? '' : 's'}: ${missingModes.join(', ')}. Export new variables from Token Studio first.`,
       details: { missingModes: missingModes as unknown as JsonValue },
     };
   }

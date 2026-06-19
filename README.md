@@ -1,4 +1,4 @@
-# Color migration helper
+# Designsystemet migration helper
 
 Figma plugin for migrating Core UI Kit files from color variants to variable modes.
 

@@ -1,7 +1,7 @@
 {
-  "name": "Migration-helper",
+  "name": "designsystemet-migration-helper",
   "version": "1.0.0",
-  "description": "Your Figma Plugin",
+  "description": "Figma plugin for migrating Core UI Kit files from color variants to variable modes.",
   "main": "code.js",
   "scripts": {
     "build": "node build.mjs",
