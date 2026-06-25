@@ -95,15 +95,16 @@
   }
 
   .back-button {
-    display: grid;
-    place-items: center;
-    width: 32px;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
     height: 32px;
-    padding: 0;
+    padding: 0 8px 0 4px;
     border: none;
     background: transparent;
     color: var(--figma-color-text-secondary, #6b6b6b);
     cursor: pointer;
+    font: inherit;
   }
 
   .back-button:hover {
@@ -432,6 +433,7 @@
           <svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
             <path d="M10 3L5 8l5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
           </svg>
+          <span>Back</span>
         </button>
       </div>
       <div class="landing">
@@ -459,6 +461,7 @@
           <svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
             <path d="M10 3L5 8l5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
           </svg>
+          <span>Back</span>
         </button>
       </div>
 
@@ -502,6 +505,7 @@
           <svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
             <path d="M10 3L5 8l5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
           </svg>
+          <span>Back</span>
         </button>
       </div>
 
@@ -683,7 +687,7 @@
     const PRIME_STATES = {
       checking: { cls: "status-neutral", icon: null, text: "Checking variable state...", button: false },
       needs: { cls: "status-warning", icon: "warning", text: "Rename the Main color collection to Color and remove color/main/ from variable names.", button: true },
-      "needs-tokens": { cls: "status-warning", icon: "warning", text: "The Color collection is missing the new color modes. Export new variables from Token Studio first.", button: false },
+      "needs-tokens": { cls: "status-info", icon: "info", text: "Variables now have the correct names. Export tokens from Token Studio with the updated structure to continue.", button: false },
       ready: { cls: "status-success", icon: "success", text: "Variables are ready.", button: false },
       "not-library": { cls: "status-info", icon: "info", text: "This file does not appear to be a Core UI Kit library. Open the library file to run these steps.", button: false },
       error: { cls: "status-error", icon: "error", text: "Could not rename variables.", button: true }

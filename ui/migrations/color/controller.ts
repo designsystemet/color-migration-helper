@@ -64,7 +64,7 @@ export function createColorController() {
   const PRIME_STATES = {
     checking: { cls: 'status-neutral', icon: null, text: 'Checking variable state...', button: false },
     needs: { cls: 'status-warning', icon: 'warning', text: 'Rename the Main color collection to Color and remove color/main/ from variable names.', button: true },
-    'needs-tokens': { cls: 'status-warning', icon: 'warning', text: 'The Color collection is missing the new color modes. Export new variables from Token Studio first.', button: false },
+    'needs-tokens': { cls: 'status-info', icon: 'info', text: 'Variables now have the correct names. Export tokens from Token Studio with the updated structure to continue.', button: false },
     ready: { cls: 'status-success', icon: 'success', text: 'Variables are ready.', button: false },
     'not-library': { cls: 'status-info', icon: 'info', text: 'This file does not appear to be a Core UI Kit library. Open the library file to run these steps.', button: false },
     error: { cls: 'status-error', icon: 'error', text: 'Could not rename variables.', button: true },
